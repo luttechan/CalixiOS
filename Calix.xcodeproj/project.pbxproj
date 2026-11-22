@@ -11,7 +11,7 @@
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = ko;
 			hasScannedForEncodings = 0;
-			knownRegions = (ko, Base);
+			knownRegions = (ko, en, ja, Base);
 			mainGroup = CA1100000000000000000003;
 			productRefGroup = CA1100000000000000000005;
 			projectDirPath = "";
@@ -36,7 +36,7 @@
 		};
 		CA1100000000000000000004 = {
 			isa = PBXGroup;
-			children = (CA110000000000000000000C, CA110000000000000000000D, CA110000000000000000000E, CA1100000000000000000019, CA110000000000000000001B, CA110000000000000000001D, CA110000000000000000001F, CA1100000000000000000021, CA1100000000000000000023, CA1100000000000000000007);
+			children = (CA110000000000000000000C, CA110000000000000000000D, CA110000000000000000000E, CA1100000000000000000019, CA110000000000000000001B, CA110000000000000000001D, CA110000000000000000001F, CA1100000000000000000021, CA1100000000000000000023, CA1100000000000000000007, CA1100000000000000000025);
 			path = Calix;
 			sourceTree = "<group>";
 		};
@@ -103,7 +103,7 @@
 		CA1100000000000000000016 = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (CA1100000000000000000017, CA1100000000000000000022);
+			files = (CA1100000000000000000017, CA1100000000000000000022, CA1100000000000000000028);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		CA1100000000000000000017 = { isa = PBXBuildFile; fileRef = CA1100000000000000000007; };
@@ -120,6 +120,10 @@
 		CA1100000000000000000022 = { isa = PBXBuildFile; fileRef = CA1100000000000000000021; };
 		CA1100000000000000000023 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopBackup.swift; sourceTree = "<group>"; };
 		CA1100000000000000000024 = { isa = PBXBuildFile; fileRef = CA1100000000000000000023; };
+		CA1100000000000000000025 = { isa = PBXVariantGroup; children = (CA1100000000000000000026, CA1100000000000000000027); name = Localizable.strings; sourceTree = "<group>"; };
+		CA1100000000000000000026 = { isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		CA1100000000000000000027 = { isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
+		CA1100000000000000000028 = { isa = PBXBuildFile; fileRef = CA1100000000000000000025; };
 	};
 	rootObject = CA1100000000000000000001;
 }

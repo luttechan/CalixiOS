@@ -8,7 +8,7 @@ struct CalixApp: App {
     var body: some Scene {
         WindowGroup {
             CalixRoot(library: library)
-                .environment(\.locale, Locale(identifier: "ko_KR"))
+                .environment(\.locale, Locale(identifier: library.data.preferences.language ?? "ko"))
                 .task {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-calix-smoke") { CalixScreenshot.runSmokeCheck() }

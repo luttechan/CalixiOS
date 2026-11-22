@@ -100,6 +100,15 @@ struct CalixJournal: Codable, Identifiable {
     var title = ""
     var body = ""
     var secret = false
+    var formatting: [JournalFormat]?
+}
+
+struct JournalFormat: Codable {
+    var start: Int
+    var length: Int
+    var bold: Bool
+    var italic: Bool
+    var color: Int
 }
 
 struct CalixFocus: Codable, Identifiable {
@@ -158,6 +167,7 @@ struct CalixPreferences: Codable {
     var nickname = ""
     var homeMessage = "오늘의 학습 일정"
     var theme = CalixTheme.aurora
+    var language: String?
     var lockOnBackground = false
     var lockTimetable = false
     var notify = false

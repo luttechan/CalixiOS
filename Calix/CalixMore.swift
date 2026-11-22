@@ -1,6 +1,7 @@
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 struct CalixMore: View {
     let library: CalixLibrary
@@ -30,7 +31,7 @@ struct CalixMore: View {
         .navigationTitle("더 보기")
     }
 
-    private func destination<Content: View>(_ title: String, _ symbol: String, @ViewBuilder content: () -> Content) -> some View {
+    private func destination<Content: View>(_ title: LocalizedStringKey, _ symbol: String, @ViewBuilder content: () -> Content) -> some View {
         NavigationLink(destination: content) { Label(title, systemImage: symbol) }
     }
 }
@@ -110,10 +111,121 @@ private struct CalixDiary: View {
             EditForm(title: title, initial: entry, valid: { !$0.title.trimmed.isEmpty || !$0.body.trimmed.isEmpty }) { item in
                 DatePicker("날짜", selection: item.date, displayedComponents: .date)
                 TextField("제목", text: item.title)
-                TextEditor(text: item.body).frame(minHeight: 220).accessibilityLabel("일기 본문")
+                JournalEditor(entry: item)
             } save: { entry in
                 library.update { $0.journals.replace(entry) }
             }
+        }
+    }
+}
+
+private struct JournalEditor: View {
+    @Binding var entry: CalixJournal
+    @State private var selection: (UUID, Edit)?
+
+    enum Edit { case bold, italic, color(Int) }
+    static let colors: [UIColor] = [
+        .label, .systemBlue, .systemPurple, .systemPink, .systemTeal,
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button { selection = (UUID(), .bold) } label: { Image(systemName: "bold") }
+                    .accessibilityLabel("굵게")
+                Button { selection = (UUID(), .italic) } label: { Image(systemName: "italic") }
+                    .accessibilityLabel("기울임")
+                Menu {
+                    ForEach(Array(["기본", "파랑", "보라", "분홍", "청록"].enumerated()), id: \.offset) { pair in
+                        Button(pair.element) { selection = (UUID(), .color(pair.offset)) }
+                    }
+                } label: { Label("글자 색", systemImage: "paintpalette") }
+            }.buttonStyle(.borderless)
+            JournalTextArea(entry: $entry, edit: selection).frame(minHeight: 220)
+        }
+    }
+}
+
+private struct JournalTextArea: UIViewRepresentable {
+    @Binding var entry: CalixJournal
+    let edit: (UUID, JournalEditor.Edit)?
+
+    func makeCoordinator() -> Coordinator { Coordinator(entry: $entry) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.accessibilityLabel = "일기 본문"
+        let body = NSMutableAttributedString(string: entry.body, attributes: attributes(bold: false, italic: false, color: 0))
+        for run in entry.formatting ?? [] where run.start >= 0 && run.length > 0 {
+            guard run.start <= body.length, run.length <= body.length - run.start else { continue }
+            body.addAttributes(attributes(bold: run.bold, italic: run.italic, color: run.color),
+                               range: NSRange(location: run.start, length: run.length))
+        }
+        view.attributedText = body
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.entry = $entry
+        guard let (id, command) = edit, id != context.coordinator.lastEdit else { return }
+        context.coordinator.lastEdit = id
+        let range = view.selectedRange
+        var style = view.typingAttributes
+        if range.length > 0, range.location < view.textStorage.length {
+            style = view.textStorage.attributes(at: range.location, effectiveRange: nil)
+        }
+        let font = style[.font] as? UIFont ?? UIFont.preferredFont(forTextStyle: .body)
+        var traits = font.fontDescriptor.symbolicTraits
+        switch command {
+        case .bold: traits.formSymmetricDifference(.traitBold)
+        case .italic: traits.formSymmetricDifference(.traitItalic)
+        case .color(let index): style[.foregroundColor] = JournalEditor.colors[index]
+        }
+        if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
+            style[.font] = UIFont(descriptor: descriptor, size: font.pointSize)
+        }
+        if range.length > 0 {
+            view.textStorage.addAttributes(style, range: range)
+            let coordinator = context.coordinator
+            Task { @MainActor in coordinator.textViewDidChange(view) }
+        } else {
+            view.typingAttributes = style
+        }
+    }
+
+    private func attributes(bold: Bool, italic: Bool, color: Int) -> [NSAttributedString.Key: Any] {
+        let base = UIFont.preferredFont(forTextStyle: .body)
+        var traits: UIFontDescriptor.SymbolicTraits = []
+        if bold { traits.insert(.traitBold) }
+        if italic { traits.insert(.traitItalic) }
+        let font = base.fontDescriptor.withSymbolicTraits(traits).map { UIFont(descriptor: $0, size: base.pointSize) } ?? base
+        let ink = JournalEditor.colors.indices.contains(color) ? JournalEditor.colors[color] : .label
+        return [.font: font, .foregroundColor: ink]
+    }
+
+    @MainActor final class Coordinator: NSObject, UITextViewDelegate {
+        var entry: Binding<CalixJournal>
+        var lastEdit: UUID?
+        init(entry: Binding<CalixJournal>) { self.entry = entry }
+
+        func textViewDidChange(_ textView: UITextView) {
+            let body = textView.textStorage
+            var styles: [JournalFormat] = []
+            body.enumerateAttributes(in: NSRange(location: 0, length: body.length)) { values, span, _ in
+                let traits = (values[.font] as? UIFont)?.fontDescriptor.symbolicTraits ?? []
+                let color = (values[.foregroundColor] as? UIColor).flatMap { JournalEditor.colors.firstIndex(of: $0) } ?? 0
+                let bold = traits.contains(.traitBold)
+                let italic = traits.contains(.traitItalic)
+                if bold || italic || color != 0 {
+                    styles.append(JournalFormat(start: span.location, length: span.length, bold: bold, italic: italic, color: color))
+                }
+            }
+            var value = entry.wrappedValue
+            value.body = body.string
+            value.formatting = styles.isEmpty ? nil : styles
+            entry.wrappedValue = value
         }
     }
 }
@@ -190,6 +302,11 @@ private struct CalixSettings: View {
                 if library.data.avatar != nil { Button("사진 지우기") { library.update { $0.avatar = nil } } }
             }
             Section("화면") {
+                Picker("언어", selection: optionalSetting(\.language, default: "ko")) {
+                    Text("한국어").tag("ko")
+                    Text("English").tag("en")
+                    Text("日本語").tag("ja")
+                }
                 NavigationLink {
                     List(CalixTheme.allCases) { theme in
                         Button {
@@ -197,7 +314,7 @@ private struct CalixSettings: View {
                         } label: {
                             HStack(spacing: 12) {
                                 RoundedRectangle(cornerRadius: 9).fill(theme.swatch).frame(width: 38, height: 28)
-                                Text(theme.rawValue).foregroundStyle(.primary)
+                                Text(LocalizedStringKey(theme.rawValue)).foregroundStyle(.primary)
                                 Spacer()
                                 if library.data.preferences.theme == theme {
                                     Image(systemName: "checkmark").foregroundStyle(theme.accent)
@@ -208,7 +325,7 @@ private struct CalixSettings: View {
                     }
                     .navigationTitle("테마")
                 } label: {
-                    LabeledContent("테마", value: library.data.preferences.theme.rawValue)
+                    LabeledContent("테마") { Text(LocalizedStringKey(library.data.preferences.theme.rawValue)) }
                 }
                 Toggle("출결 표시", isOn: setting(\.showAttendance))
             }
