@@ -26,7 +26,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print DTPlatformName' "$app/Info.plist")" = iphoneos
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")" = io.github.luttechan.calix.ios
           xcrun vtool -show-build "$app/Calix" | grep -E 'platform[[:space:]]+IOS$'
-          xcrun lipo -verify_arch arm64 "$app/Calix"
+          xcrun lipo "$app/Calix" -verify_arch arm64
           test ! -e "$app/embedded.mobileprovision"
           test -z "$(find "$app" -type f \( -iname '*.har' -o -iname '*.sqlite*' -o -iname '*.db' \) -print -quit)"
           mkdir -p "$RUNNER_TEMP/package/Payload"
