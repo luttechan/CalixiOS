@@ -64,7 +64,7 @@ jobs:
           grep -Fx 'PASS' "$data/Documents/calix-smoke.txt"
           cp "$data/Documents/calix-smoke.txt" "$RUNNER_TEMP/calix-artifacts/"
           xcrun simctl status_bar "$device" override --time '9:41' --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState unplugged --batteryLevel 100 || true
-          for page in home deadlines calendar courses more; do
+          for page in home home-vesper deadlines calendar courses more; do
             xcrun simctl terminate "$device" "$bundle_id" || true
             xcrun simctl launch "$device" "$bundle_id" -calix-screenshot "$page"
             sleep 3

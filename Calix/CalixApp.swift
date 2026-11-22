@@ -39,9 +39,12 @@ enum CalixScreenshot {
             ]
             snapshot.merge(into: &data)
             let assignment = data.events.first { $0.id == "canvas:42:assignment:4" }
+            data.preferences.theme = .vesper
+            let roundTrip = try JSONDecoder().decode(CalixData.self, from: JSONEncoder().encode(data))
             let valid = data.events.count == 2 && assignment?.title == "Edited" && assignment?.note == "Keep" &&
                 assignment?.done == false && assignment?.syncStatus == "graded" &&
-                data.canvasCourses?["42"]?.term == "검증 학기" && data.moduleValidators?["42"] == "example"
+                data.canvasCourses?["42"]?.term == "검증 학기" && data.moduleValidators?["42"] == "example" &&
+                roundTrip.preferences.theme == .vesper
             report = valid ? "PASS" : "Canvas merge did not preserve expected state"
         } catch {
             report = String(describing: error)
@@ -74,7 +77,7 @@ enum CalixScreenshot {
         }
         var result = CalixData()
         result.preferences.nickname = "민서"
-        result.preferences.theme = .lavender
+        result.preferences.theme = page == "home-vesper" ? .vesper : .aurora
         result.canvasID = "fixture"
         result.lastSync = now
         result.events = [

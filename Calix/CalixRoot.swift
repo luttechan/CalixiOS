@@ -3,6 +3,7 @@ import SwiftUI
 struct CalixRoot: View {
     let library: CalixLibrary
     @Environment(\.scenePhase) private var phase
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     #if DEBUG
     @State private var tab = CalixScreenshot.tab
     #else
@@ -10,6 +11,7 @@ struct CalixRoot: View {
     #endif
 
     var body: some View {
+        let theme = library.data.preferences.theme
         Group {
             if library.unavailable {
                 ContentUnavailableView {
@@ -47,8 +49,10 @@ struct CalixRoot: View {
                 }
             }
         }
-        .tint(Color(hue: library.data.preferences.theme.hue, saturation: 0.55, brightness: 0.76))
-        .preferredColorScheme(library.data.preferences.theme == .dark ? .dark : nil)
+        .scrollContentBackground(reduceTransparency ? .visible : .hidden)
+        .background { VesperBackdrop(theme: theme).ignoresSafeArea() }
+        .tint(theme.accent)
+        .preferredColorScheme(theme.forcesDark ? .dark : nil)
         .overlay {
             if phase == .background && library.data.preferences.lockOnBackground {
                 Rectangle().fill(.background).ignoresSafeArea()
@@ -59,6 +63,49 @@ struct CalixRoot: View {
         } message: {
             Text(library.issue ?? "")
         }
+    }
+}
+
+extension CalixTheme {
+    var accent: Color {
+        Color(hue: hue, saturation: forcesDark ? 0.32 : 0.57, brightness: forcesDark ? 0.94 : 0.57)
+    }
+
+    var swatch: LinearGradient {
+        LinearGradient(colors: [
+            Color(hue: hue, saturation: 0.50, brightness: 0.76),
+            Color(hue: secondaryHue, saturation: 0.42, brightness: 0.49),
+        ], startPoint: .bottomLeading, endPoint: .topTrailing)
+    }
+}
+
+private struct VesperBackdrop: View {
+    let theme: CalixTheme
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        GeometryReader { proxy in
+            let dark = colorScheme == .dark
+            let radius = max(140, min(proxy.size.width, proxy.size.height))
+            ZStack {
+                Color(uiColor: .systemGroupedBackground)
+                if !reduceTransparency {
+                    RadialGradient(
+                        colors: [Color(hue: theme.hue, saturation: 0.57, brightness: dark ? 0.57 : 0.91)
+                            .opacity(dark ? 0.20 : 0.15), .clear],
+                        center: UnitPoint(x: 0.15, y: 0.10), startRadius: 0, endRadius: radius
+                    )
+                    RadialGradient(
+                        colors: [Color(hue: theme.secondaryHue, saturation: 0.48, brightness: dark ? 0.61 : 0.94)
+                            .opacity(dark ? 0.23 : 0.18), .clear],
+                        center: UnitPoint(x: 0.95, y: 0.64), startRadius: 0, endRadius: radius * 0.88
+                    )
+                }
+            }
+        }
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }
 
@@ -104,7 +151,7 @@ struct CalixHome: View {
                 }
             }
         }
-        .navigationTitle("Calix")
+        .navigationTitle("Calix Vesper")
         .toolbar { NavigationLink { CalixCanvas(library: library) } label: { Label("학교 동기화", systemImage: "arrow.triangle.2.circlepath") } }
     }
 }
@@ -136,9 +183,11 @@ private struct HomeScheduleCard: View {
         .foregroundStyle(.white)
         .background {
             RoundedRectangle(cornerRadius: 24).fill(LinearGradient(colors: [
-                Color(hue: preference.theme.hue, saturation: 0.63, brightness: 0.51),
-                Color(hue: preference.theme.hue - 0.04, saturation: 0.49, brightness: 0.40)
-            ], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Color(hue: preference.theme.secondaryHue, saturation: 0.51, brightness: 0.36),
+                Color(hue: preference.theme.hue, saturation: 0.56, brightness: 0.29),
+                Color(red: 0.09, green: 0.11, blue: 0.18),
+            ], startPoint: .topTrailing, endPoint: .bottomLeading))
+            .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.13)) }
         }
     }
 

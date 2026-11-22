@@ -5,11 +5,36 @@ struct CalixChecklist: View {
     @State private var editing: CalixTask?
     @State private var search = ""
     @State private var importEvents = false
-    private let statuses = ["계획", "진행중", "검토중", "완료", "취소"]
+    @State private var editStatuses = false
+    @State private var sortField = TaskSort.title
+    @State private var ascending = true
+
+    private enum TaskSort: String, CaseIterable, Identifiable {
+        case title = "할 일", due = "기한", section = "분류", role = "내 역할", instructor = "담당 교수", status = "상태", note = "비고"
+        var id: Self { self }
+        func compare(_ left: CalixTask, _ right: CalixTask) -> ComparisonResult {
+            switch self {
+            case .title: left.title.localizedStandardCompare(right.title)
+            case .due: (left.due ?? .distantFuture).compare(right.due ?? .distantFuture)
+            case .section: left.section.localizedStandardCompare(right.section)
+            case .role: (left.role ?? "").localizedStandardCompare(right.role ?? "")
+            case .instructor: (left.instructor ?? "").localizedStandardCompare(right.instructor ?? "")
+            case .status: (left.status ?? "").localizedStandardCompare(right.status ?? "")
+            case .note: (left.note ?? "").localizedStandardCompare(right.note ?? "")
+            }
+        }
+    }
+
+    private var statuses: [CalixTaskStatus] { library.data.taskStatuses ?? CalixTaskStatus.defaults }
 
     var body: some View {
         let visible = library.data.tasks.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
-        let groups = Dictionary(grouping: visible, by: \.section)
+        let sorted = visible.sorted { left, right in
+            let order = sortField.compare(left, right)
+            if order == .orderedSame { return left.id.uuidString < right.id.uuidString }
+            return order == (ascending ? .orderedAscending : .orderedDescending)
+        }
+        let groups = Dictionary(grouping: sorted, by: \.section)
         List {
             ForEach(groups.keys.sorted(), id: \.self) { section in
                 Section(section) {
@@ -18,7 +43,11 @@ struct CalixChecklist: View {
                             Label {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(task.title).foregroundStyle(.primary)
-                                    Text(task.status ?? (task.done ? "완료" : "계획")).font(.caption).foregroundStyle(.secondary)
+                                    let name = task.status ?? (task.done ? "완료" : "계획")
+                                    let tint = statuses.first { $0.name == name }?.tint
+                                    Text(name).font(.caption).foregroundStyle(.secondary)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(CalixStatusEditor.color(tint ?? "gray").opacity(0.15), in: Capsule())
                                 }
                             } icon: { Image(systemName: task.done ? "checkmark.circle.fill" : "circle") }
                         }
@@ -34,26 +63,33 @@ struct CalixChecklist: View {
         .navigationTitle("체크리스트")
         .searchable(text: $search)
         .toolbar {
+            Menu {
+                Picker("정렬", selection: $sortField) {
+                    ForEach(TaskSort.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Toggle("오름차순", isOn: $ascending)
+                Button("상태 편집") { editStatuses = true }
+            } label: { Label("체크리스트 관리", systemImage: "ellipsis.circle") }
             Button { importEvents = true } label: { Label("일정에서 가져오기", systemImage: "square.and.arrow.down") }
             Button { editing = CalixTask() } label: { Label("할 일 추가", systemImage: "plus") }
+        }
+        .sheet(isPresented: $editStatuses) {
+            NavigationStack { CalixStatusEditor(library: library) }
         }
         .sheet(isPresented: $importEvents) {
             NavigationStack {
                 let sources = Set(library.data.tasks.compactMap(\.sourceID))
+                let available = library.data.events.filter { !sources.contains($0.id) }
                 List {
-                    ForEach(library.data.events.filter { !sources.contains($0.id) }) { source in
-                        Button {
-                            library.update { data in
-                                if !data.tasks.contains(where: { $0.sourceID == source.id }) {
-                                    data.tasks.append(CalixTask(title: source.title, section: source.course.isEmpty ? "기본" : source.course,
-                                                                done: source.done, due: source.due, note: source.note, sourceID: source.id))
-                                }
-                            }
-                        } label: { Label(source.title, systemImage: source.kind.symbol) }
+                    ForEach(available) { source in
+                        Button { addTasks([source]) } label: { Label(source.title, systemImage: source.kind.symbol) }
                     }
                 }
                 .navigationTitle("일정에서 가져오기")
-                .toolbar { Button("닫기") { importEvents = false } }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("닫기") { importEvents = false } }
+                    ToolbarItem(placement: .confirmationAction) { Button("일괄 가져오기") { addTasks(available) }.disabled(available.isEmpty) }
+                }
             }
         }
         .sheet(item: $editing) { item in
@@ -61,7 +97,7 @@ struct CalixChecklist: View {
                 TextField("제목", text: draft.title)
                 TextField("목록 이름", text: draft.section)
                 Picker("상태", selection: Binding(get: { draft.wrappedValue.status ?? (draft.wrappedValue.done ? "완료" : "계획") }, set: { draft.wrappedValue.status = $0 })) {
-                    ForEach(statuses, id: \.self) { Text($0).tag($0) }
+                    ForEach(statuses) { status in Label(status.name, systemImage: "circle.fill").tag(status.name) }
                 }
                 Toggle("마감 설정", isOn: Binding(get: { draft.wrappedValue.due != nil }, set: { draft.wrappedValue.due = $0 ? .now : nil }))
                 if draft.wrappedValue.due != nil {
@@ -74,8 +110,18 @@ struct CalixChecklist: View {
                 var item = item
                 item.title = item.title.trimmed
                 item.section = item.section.trimmed.isEmpty ? "기본" : item.section.trimmed
-                if let status = item.status { item.done = status == "완료" }
+                if let name = item.status, let status = statuses.first(where: { $0.name == name }) { item.done = status.complete }
                 return library.update { $0.tasks.replace(item) }
+            }
+        }
+    }
+
+    private func addTasks(_ events: [CalixEvent]) {
+        library.update { data in
+            var existing = Set(data.tasks.compactMap(\.sourceID))
+            for event in events where existing.insert(event.id).inserted {
+                data.tasks.append(CalixTask(title: event.title, section: event.course.isEmpty ? "기본" : event.course,
+                                           done: event.done, due: event.due, note: event.note, sourceID: event.id))
             }
         }
     }
@@ -91,6 +137,57 @@ struct CalixChecklist: View {
 
     private func optionalText(_ value: Binding<String?>) -> Binding<String> {
         Binding(get: { value.wrappedValue ?? "" }, set: { value.wrappedValue = $0 })
+    }
+}
+
+private struct CalixStatusEditor: View {
+    let library: CalixLibrary
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var tint = "blue"
+    @State private var complete = false
+    private let colors = ["gray", "blue", "purple", "green", "orange", "pink"]
+    private var statuses: [CalixTaskStatus] { library.data.taskStatuses ?? CalixTaskStatus.defaults }
+
+    static func color(_ value: String) -> Color {
+        switch value {
+        case "blue": .blue
+        case "purple": .purple
+        case "green": .green
+        case "orange": .orange
+        case "pink": .pink
+        default: .gray
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section("등록된 상태") {
+                ForEach(statuses) { status in
+                    Label {
+                        Text(status.name)
+                    } icon: {
+                        Image(systemName: "circle.fill").foregroundStyle(Self.color(status.tint))
+                    }
+                }
+            }
+            Section("상태 추가") {
+                TextField("이름", text: $name)
+                Picker("색상", selection: $tint) {
+                    ForEach(colors, id: \.self) { value in
+                        Label(value.capitalized, systemImage: "circle.fill").tint(Self.color(value)).tag(value)
+                    }
+                }
+                Toggle("완료 상태", isOn: $complete)
+                Button("추가") {
+                    let label = String(name.trimmed.prefix(32))
+                    let choice = CalixTaskStatus(name: label, tint: tint, complete: complete)
+                    if library.update({ $0.taskStatuses = statuses + [choice] }) { name = "" }
+                }.disabled(name.trimmed.isEmpty || statuses.count >= 30 || statuses.contains { $0.name == String(name.trimmed.prefix(32)) })
+            }
+        }
+        .navigationTitle("상태 편집")
+        .toolbar { Button("닫기") { dismiss() } }
     }
 }
 

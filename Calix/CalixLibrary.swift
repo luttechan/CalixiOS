@@ -56,6 +56,21 @@ struct CalixTask: Codable, Identifiable {
     var sourceID: String?
 }
 
+struct CalixTaskStatus: Codable, Identifiable {
+    var name: String
+    var tint: String
+    var complete: Bool
+    var id: String { name }
+
+    static let defaults = [
+        Self(name: "계획", tint: "gray", complete: false),
+        Self(name: "진행중", tint: "blue", complete: false),
+        Self(name: "검토중", tint: "purple", complete: false),
+        Self(name: "완료", tint: "green", complete: true),
+        Self(name: "취소", tint: "gray", complete: false),
+    ]
+}
+
 struct CalixLesson: Codable, Identifiable {
     var id = UUID()
     var title = ""
@@ -109,11 +124,24 @@ struct CalixAttendance: Codable, Identifiable {
 }
 
 enum CalixTheme: String, Codable, Identifiable, CaseIterable {
+    case aurora = "오로라", vesper = "베스퍼", glacier = "글레이셔"
     case sky = "스카이", pink = "핑크", mint = "민트", purple = "퍼플", dark = "다크"
     case peach = "피치", amber = "앰버", olive = "올리브", lavender = "라벤더"
     var id: Self { self }
+    var forcesDark: Bool { self == .dark || self == .aurora || self == .vesper }
+    var secondaryHue: Double {
+        switch self {
+        case .aurora: 0.73
+        case .vesper: 0.56
+        case .glacier: 0.46
+        default: (hue + 0.13).truncatingRemainder(dividingBy: 1)
+        }
+    }
     var hue: Double {
         switch self {
+        case .aurora: 0.49
+        case .vesper: 0.74
+        case .glacier: 0.57
         case .sky: 0.59
         case .pink: 0.91
         case .mint: 0.46
@@ -129,7 +157,7 @@ enum CalixTheme: String, Codable, Identifiable, CaseIterable {
 struct CalixPreferences: Codable {
     var nickname = ""
     var homeMessage = "오늘의 학습 일정"
-    var theme = CalixTheme.lavender
+    var theme = CalixTheme.aurora
     var lockOnBackground = false
     var lockTimetable = false
     var notify = false
@@ -152,6 +180,7 @@ struct CalixData: Codable {
     var preferences = CalixPreferences()
     var events: [CalixEvent] = []
     var tasks: [CalixTask] = []
+    var taskStatuses: [CalixTaskStatus]?
     var lessons: [CalixLesson] = []
     var grades: [CalixGrade] = []
     var gradeScales: [String: Double]?

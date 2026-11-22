@@ -190,7 +190,26 @@ private struct CalixSettings: View {
                 if library.data.avatar != nil { Button("사진 지우기") { library.update { $0.avatar = nil } } }
             }
             Section("화면") {
-                Picker("테마", selection: setting(\.theme)) { ForEach(CalixTheme.allCases) { Text($0.rawValue).tag($0) } }
+                NavigationLink {
+                    List(CalixTheme.allCases) { theme in
+                        Button {
+                            library.update { $0.preferences.theme = theme }
+                        } label: {
+                            HStack(spacing: 12) {
+                                RoundedRectangle(cornerRadius: 9).fill(theme.swatch).frame(width: 38, height: 28)
+                                Text(theme.rawValue).foregroundStyle(.primary)
+                                Spacer()
+                                if library.data.preferences.theme == theme {
+                                    Image(systemName: "checkmark").foregroundStyle(theme.accent)
+                                }
+                            }
+                        }
+                        .accessibilityAddTraits(library.data.preferences.theme == theme ? .isSelected : [])
+                    }
+                    .navigationTitle("테마")
+                } label: {
+                    LabeledContent("테마", value: library.data.preferences.theme.rawValue)
+                }
                 Toggle("출결 표시", isOn: setting(\.showAttendance))
             }
             Section("보안") {
