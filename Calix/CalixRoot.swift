@@ -69,6 +69,7 @@ struct CalixRoot: View {
         }
         .scrollContentBackground(reduceTransparency ? .visible : .hidden)
         .background { VesperBackdrop(theme: theme).ignoresSafeArea() }
+        .environment(\.vesperTheme, theme)
         .tint(theme.accent)
         .preferredColorScheme(theme.forcesDark ? .dark : nil)
         .overlay {
@@ -112,6 +113,14 @@ struct CalixRoot: View {
         .buttonStyle(.plain)
         .accessibilityLabel(Text(title))
         .accessibilityAddTraits(tab == index ? .isSelected : [])
+    }
+}
+
+private struct VesperThemeKey: EnvironmentKey { static let defaultValue = CalixTheme.aurora }
+private extension EnvironmentValues {
+    var vesperTheme: CalixTheme {
+        get { self[VesperThemeKey.self] }
+        set { self[VesperThemeKey.self] = newValue }
     }
 }
 
@@ -204,6 +213,7 @@ struct CalixHome: View {
 }
 
 struct VesperPage<Content: View>: View {
+    @Environment(\.vesperTheme) private var theme
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -216,6 +226,7 @@ struct VesperPage<Content: View>: View {
                 .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
+        .background { VesperBackdrop(theme: theme).ignoresSafeArea() }
     }
 }
 
@@ -240,6 +251,7 @@ extension View {
 }
 
 private struct HomeScheduleCard: View {
+    @Environment(\.locale) private var locale
     let date: Date
     let preference: CalixPreferences
     let today: Int
@@ -248,11 +260,14 @@ private struct HomeScheduleCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
-            Text(date.formatted(.dateTime.month().day().weekday()))
+            Text(date.formatted(.dateTime.month().day().weekday().locale(locale)))
                 .font(.subheadline.weight(.semibold)).foregroundStyle(.white.opacity(0.80))
             VStack(alignment: .leading, spacing: 4) {
                 if !preference.nickname.isEmpty { Text("\(preference.nickname)님").font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.86)) }
-                Text(preference.homeMessage).font(.largeTitle.weight(.semibold)).tracking(-0.7).accessibilityAddTraits(.isHeader)
+                Group {
+                    if preference.homeMessage == "오늘의 학습 일정" { Text("오늘의 학습 일정") }
+                    else { Text(preference.homeMessage) }
+                }.font(.largeTitle.weight(.semibold)).tracking(-0.7).accessibilityAddTraits(.isHeader)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
@@ -383,6 +398,7 @@ struct CalixEvents: View {
 }
 
 struct EventLink: View {
+    @Environment(\.locale) private var locale
     let id: String
     let library: CalixLibrary
     var card = false
@@ -400,7 +416,7 @@ struct EventLink: View {
                         .background(library.data.preferences.theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                        Text([event.course, event.done ? "완료" : event.due?.formatted(.dateTime.month().day().hour().minute()) ?? "기한 없음"].filter { !$0.isEmpty }.joined(separator: ", "))
+                        Text([event.course, event.done ? "완료" : event.due?.formatted(.dateTime.month().day().hour().minute().locale(locale)) ?? "기한 없음"].filter { !$0.isEmpty }.joined(separator: ", "))
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     if card { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }
@@ -420,6 +436,7 @@ struct EventLink: View {
 }
 
 private struct EventDetails: View {
+    @Environment(\.locale) private var locale
     let id: String
     let library: CalixLibrary
     @Environment(\.dismiss) private var dismiss
@@ -432,7 +449,7 @@ private struct EventDetails: View {
                 Section {
                     LabeledContent("과목", value: event.course.isEmpty ? "개인 일정" : event.course)
                     LabeledContent("유형", value: event.kind.rawValue)
-                    LabeledContent("마감", value: event.due?.formatted(.dateTime.month().day().hour().minute()) ?? "기한 없음")
+                    LabeledContent("마감", value: event.due?.formatted(.dateTime.month().day().hour().minute().locale(locale)) ?? "기한 없음")
                     if let status = event.syncStatus {
                         let labels = ["missing": "미제출", "graded": "채점 완료", "late": "지각", "submitted": "제출 완료",
                                       "attendance": "출석", "present": "출석", "excused": "공결", "absent": "결석",
@@ -579,6 +596,7 @@ struct CalixCourseList: View {
 }
 
 struct CalixCalendar: View {
+    @Environment(\.locale) private var locale
     let library: CalixLibrary
     @State private var date = Date()
     @State private var holiday = ""
@@ -593,7 +611,7 @@ struct CalixCalendar: View {
                 .datePickerStyle(.graphical)
                 .padding(12)
                 .vesperSurface()
-            VesperSection(title: LocalizedStringKey(date.formatted(.dateTime.month().day().weekday()))) {
+            VesperSection(title: LocalizedStringKey(date.formatted(.dateTime.month().day().weekday().locale(locale)))) {
                 if let name = library.data.holidays[key] { Label(name, systemImage: "calendar.badge.checkmark") }
                 if let name = library.data.offDays[key] { Label(name, systemImage: "moon.zzz") }
                 if events.isEmpty { Text("선택한 날짜에 마감할 일정이 없습니다.").foregroundStyle(.secondary) }
