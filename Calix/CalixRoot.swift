@@ -4,6 +4,8 @@ struct CalixRoot: View {
     let library: CalixLibrary
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var dockSelection
     #if DEBUG
     @State private var tab = CalixScreenshot.tab
     #else
@@ -36,16 +38,32 @@ struct CalixRoot: View {
                 }
             } else {
                 TabView(selection: $tab) {
-                    NavigationStack { CalixHome(library: library, openDeadlines: { tab = 1 }) }
-                        .tabItem { Label("홈", systemImage: "house") }.tag(0)
-                    NavigationStack { CalixEvents(library: library) }
-                        .tabItem { Label("일정", systemImage: "calendar.badge.clock") }.tag(1)
-                    NavigationStack { CalixCalendar(library: library) }
-                        .tabItem { Label("달력", systemImage: "calendar") }.tag(2)
-                    NavigationStack { CalixCourseList(library: library) }
-                        .tabItem { Label("과목", systemImage: "books.vertical") }.tag(3)
-                    NavigationStack { CalixMore(library: library) }
-                        .tabItem { Label("더 보기", systemImage: "ellipsis") }.tag(4)
+                    NavigationStack { CalixHome(library: library, openDeadlines: { changeTab(1) }).toolbar(.hidden, for: .tabBar) }.tag(0)
+                    NavigationStack { CalixEvents(library: library).toolbar(.hidden, for: .tabBar) }.tag(1)
+                    NavigationStack { CalixCalendar(library: library).toolbar(.hidden, for: .tabBar) }.tag(2)
+                    NavigationStack { CalixCourseList(library: library).toolbar(.hidden, for: .tabBar) }.tag(3)
+                    NavigationStack { CalixMore(library: library).toolbar(.hidden, for: .tabBar) }.tag(4)
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    HStack(spacing: 3) {
+                        dockItem(0, "홈", "house")
+                        dockItem(1, "일정", "tray.full")
+                        dockItem(2, "달력", "calendar")
+                        dockItem(3, "과목", "books.vertical")
+                        dockItem(4, "더 보기", "ellipsis")
+                    }
+                    .padding(5)
+                    .background {
+                        if reduceTransparency {
+                            RoundedRectangle(cornerRadius: 22).fill(Color(uiColor: .secondarySystemGroupedBackground))
+                        } else {
+                            RoundedRectangle(cornerRadius: 22).fill(.regularMaterial)
+                        }
+                    }
+                    .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(.primary.opacity(0.09)) }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 7)
+                    .padding(.bottom, 3)
                 }
             }
         }
@@ -63,6 +81,37 @@ struct CalixRoot: View {
         } message: {
             Text(library.issue ?? "")
         }
+    }
+
+    private func changeTab(_ value: Int) {
+        guard tab != value else { return }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.78)) { tab = value }
+    }
+
+    private func dockItem(_ index: Int, _ title: LocalizedStringKey, _ symbol: String) -> some View {
+        Button { changeTab(index) } label: {
+            VStack(spacing: 4) {
+                Image(systemName: symbol).font(.system(size: 17, weight: tab == index ? .semibold : .regular))
+                Text(title).font(.caption2.weight(tab == index ? .semibold : .medium)).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, minHeight: 46)
+            .padding(.horizontal, 3)
+            .contentShape(Rectangle())
+            .foregroundStyle(tab == index ? library.data.preferences.theme.accent : .secondary)
+            .background {
+                if tab == index {
+                    if reduceMotion {
+                        RoundedRectangle(cornerRadius: 17).fill(library.data.preferences.theme.accent.opacity(0.14))
+                    } else {
+                        RoundedRectangle(cornerRadius: 17).fill(library.data.preferences.theme.accent.opacity(0.14))
+                            .matchedGeometryEffect(id: "active-tab", in: dockSelection)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(title))
+        .accessibilityAddTraits(tab == index ? .isSelected : [])
     }
 }
 
@@ -120,39 +169,73 @@ struct CalixHome: View {
             let today = pending.filter { DeadlineGroup.classify($0.due, now: now) == .today }.ordered
             let overdue = pending.filter { DeadlineGroup.classify($0.due, now: now) == .overdue }.ordered
             let upcoming = pending.filter { DeadlineGroup.classify($0.due, now: now) == .week }.ordered
-            List {
-                Section {
-                    HomeScheduleCard(date: now, preference: library.data.preferences, today: today.count, overdue: overdue.count, openDeadlines: openDeadlines)
-                        .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                }
-                Section("오늘의 학습 계획") {
+            VesperPage {
+                HomeScheduleCard(date: now, preference: library.data.preferences, today: today.count, overdue: overdue.count, openDeadlines: openDeadlines)
+                VesperSection(title: "오늘의 학습 계획") {
                     if today.count + overdue.count >= 3 {
-                        Label("오늘 마감과 기한 경과 일정이 몰려 있습니다.", systemImage: "exclamationmark.triangle")
+                        Label("오늘 마감과 기한 경과 일정이 몰려 있습니다.", systemImage: "exclamationmark.triangle").font(.subheadline)
                     }
-                    if today.isEmpty && overdue.isEmpty { Text("오늘 확인할 일정이 없습니다.").foregroundStyle(.secondary) }
-                    ForEach((overdue + today).prefix(5)) { EventLink(id: $0.id, library: library) }
+                    if today.isEmpty && overdue.isEmpty {
+                        Text("오늘 확인할 일정이 없습니다.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach((overdue + today).prefix(5)) { EventLink(id: $0.id, library: library, card: true) }
                 }
-                Section {
-                    NavigationLink {
-                        CalixCanvas(library: library)
-                    } label: {
-                        Label {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(library.data.canvasID == nil ? "학교 계정 연결" : "학교 동기화")
-                                Text(library.data.lastSync.map { "최근 동기화 " + $0.formatted(.dateTime.month().day().hour().minute()) } ?? "Canvas 과제·영상·출결 가져오기")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        } icon: { Image(systemName: "arrow.triangle.2.circlepath") }
+                if !upcoming.isEmpty {
+                    VesperSection(title: "다가오는 일정") {
+                        ForEach(upcoming.prefix(5)) { EventLink(id: $0.id, library: library, card: true) }
                     }
                 }
-                Section("다가오는 일정") {
-                    if upcoming.isEmpty { Text("7일 이내 마감 일정이 없습니다.").foregroundStyle(.secondary) }
-                    ForEach(upcoming.prefix(5)) { EventLink(id: $0.id, library: library) }
+                NavigationLink {
+                    CalixCanvas(library: library)
+                } label: {
+                    Label(library.data.canvasID == nil ? "학교 계정 연결" : "학교 동기화", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .vesperSurface()
                 }
+                .buttonStyle(.plain)
             }
         }
         .navigationTitle("Calix Vesper")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar { NavigationLink { CalixCanvas(library: library) } label: { Label("학교 동기화", systemImage: "arrow.triangle.2.circlepath") } }
+    }
+}
+
+struct VesperPage<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) { content }
+                .padding(.horizontal, 17)
+                .padding(.top, 12)
+                .padding(.bottom, 15)
+                .frame(maxWidth: 700)
+                .frame(maxWidth: .infinity)
+        }
+        .scrollIndicators(.hidden)
+    }
+}
+
+struct VesperSection<Content: View>: View {
+    let title: LocalizedStringKey
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title).font(.headline.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+extension View {
+    func vesperSurface() -> some View {
+        self.background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.92), in: RoundedRectangle(cornerRadius: 15))
+            .overlay { RoundedRectangle(cornerRadius: 15).strokeBorder(.primary.opacity(0.07)).allowsHitTesting(false) }
     }
 }
 
@@ -165,33 +248,38 @@ private struct HomeScheduleCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
-            Label(date.formatted(.dateTime.month().day().weekday()), systemImage: "calendar")
-                .font(.footnote.weight(.semibold)).foregroundStyle(.white.opacity(0.86))
-            if !preference.nickname.isEmpty { Text("\(preference.nickname)님").font(.subheadline.weight(.medium)) }
-            Text(preference.homeMessage).font(.title2.bold()).accessibilityAddTraits(.isHeader)
-            HStack(spacing: 12) {
-                metric("오늘 마감", today, "clock")
-                metric("기한 경과", overdue, "exclamationmark.circle")
+            Text(date.formatted(.dateTime.month().day().weekday()))
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.white.opacity(0.80))
+            VStack(alignment: .leading, spacing: 4) {
+                if !preference.nickname.isEmpty { Text("\(preference.nickname)님").font(.subheadline.weight(.medium)).foregroundStyle(.white.opacity(0.86)) }
+                Text(preference.homeMessage).font(.largeTitle.weight(.semibold)).tracking(-0.7).accessibilityAddTraits(.isHeader)
             }
-            Button(action: openDeadlines) { Label("마감 보드 열기", systemImage: "arrow.right") }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(Color(red: 0.22, green: 0.14, blue: 0.42))
-                .tint(.white)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    metric("오늘 마감", today, "clock")
+                    metric("기한 경과", overdue, "exclamationmark.circle")
+                }
+                VStack(spacing: 8) {
+                    metric("오늘 마감", today, "clock")
+                    metric("기한 경과", overdue, "exclamationmark.circle")
+                }
+            }
+            Button(action: openDeadlines) {
+                HStack(spacing: 7) {
+                    Text("마감 보드 열기").font(.subheadline.weight(.semibold))
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                }.padding(.vertical, 7).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .padding(21)
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
-        .background {
-            RoundedRectangle(cornerRadius: 24).fill(LinearGradient(colors: [
-                Color(hue: preference.theme.secondaryHue, saturation: 0.51, brightness: 0.36),
-                Color(hue: preference.theme.hue, saturation: 0.56, brightness: 0.29),
-                Color(red: 0.09, green: 0.11, blue: 0.18),
-            ], startPoint: .topTrailing, endPoint: .bottomLeading))
-            .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.13)) }
-        }
+        .background { AuroraRibbons(theme: preference.theme).clipShape(RoundedRectangle(cornerRadius: 25)) }
+        .overlay { RoundedRectangle(cornerRadius: 25).strokeBorder(.white.opacity(0.15)).allowsHitTesting(false) }
     }
 
-    private func metric(_ title: String, _ count: Int, _ symbol: String) -> some View {
+    private func metric(_ title: LocalizedStringKey, _ count: Int, _ symbol: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Label(title, systemImage: symbol).font(.footnote)
             Text(count.formatted()).font(.title2.weight(.semibold).monospacedDigit())
@@ -200,6 +288,54 @@ private struct HomeScheduleCard: View {
         .padding(12)
         .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 13))
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AuroraRibbons: View {
+    let theme: CalixTheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.scenePhase) private var scene
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [
+                Color(hue: theme.secondaryHue, saturation: 0.49, brightness: 0.29),
+                Color(red: 0.07, green: 0.085, blue: 0.145)
+            ], startPoint: .topTrailing, endPoint: .bottomLeading)
+            if !reduceTransparency {
+                TimelineView(.animation(minimumInterval: 1.0 / 20, paused: reduceMotion || scene != .active)) { frame in
+                    Canvas { context, size in
+                        let seconds = reduceMotion ? 0 : frame.date.timeIntervalSinceReferenceDate
+                        let glide = CGFloat(sin(seconds * 0.43)) * size.height * 0.075
+                        let hues = [theme.hue, theme.secondaryHue]
+                        for (band, hue) in hues.enumerated() {
+                            let offset = CGFloat(band) * size.height * 0.16
+                            var path = Path()
+                            path.move(to: CGPoint(x: size.width * 0.34, y: size.height * 0.86 + glide + offset))
+                            path.addCurve(
+                                to: CGPoint(x: size.width * 1.18, y: size.height * 0.15 + offset - glide),
+                                control1: CGPoint(x: size.width * 0.61, y: size.height * 0.48 + offset - glide),
+                                control2: CGPoint(x: size.width * 0.54, y: size.height * 0.18 + glide)
+                            )
+                            let color = Color(hue: hue, saturation: 0.51, brightness: 0.91)
+                            context.drawLayer { glow in
+                                glow.addFilter(.blur(radius: 19))
+                                glow.stroke(path, with: .color(color.opacity(0.26)),
+                                            style: StrokeStyle(lineWidth: size.width * 0.15, lineCap: .round))
+                            }
+                            context.drawLayer { edge in
+                                edge.addFilter(.blur(radius: 7))
+                                edge.stroke(path, with: .color(color.opacity(0.25)),
+                                            style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }
 
@@ -217,12 +353,12 @@ struct CalixEvents: View {
                 (showCompleted || !$0.done) && (!starredOnly || $0.starred) && (kind == nil || kind == $0.kind) &&
                     (search.isEmpty || "\($0.title) \($0.course)".localizedCaseInsensitiveContains(search))
             }.ordered
-            List {
+            VesperPage {
                 ForEach(DeadlineGroup.allCases) { group in
                     let items = visible.filter { DeadlineGroup.classify($0.due, now: context.date) == group }
                     if !items.isEmpty {
-                        Section("\(group.rawValue) · \(items.count)개") {
-                            ForEach(items) { EventLink(id: $0.id, library: library) }
+                        VesperSection(title: LocalizedStringKey(group.rawValue)) {
+                            ForEach(items) { EventLink(id: $0.id, library: library, card: true) }
                         }
                     }
                 }
@@ -230,7 +366,7 @@ struct CalixEvents: View {
             }
         }
         .navigationTitle("마감 보드")
-        .searchable(text: $search, prompt: "일정·과목 검색")
+        .searchable(text: $search, prompt: "일정, 과목 검색")
         .toolbar {
             Menu {
                 Picker("일정 종류", selection: $kind) {
@@ -249,22 +385,36 @@ struct CalixEvents: View {
 struct EventLink: View {
     let id: String
     let library: CalixLibrary
+    var card = false
 
     var body: some View {
         if let event = library.data.events.first(where: { $0.id == id }) {
             NavigationLink {
                 EventDetails(id: id, library: library)
             } label: {
-                Label {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(event.title)
-                        Text([event.course, event.done ? "완료" : event.due?.formatted(.dateTime.month().day().hour().minute()) ?? "기한 없음"].filter { !$0.isEmpty }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                } icon: {
+                HStack(spacing: 11) {
                     Image(systemName: event.done ? "checkmark.circle.fill" : event.starred ? "star.fill" : event.kind.symbol)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(library.data.preferences.theme.accent)
+                        .frame(width: 35, height: 35)
+                        .background(library.data.preferences.theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        Text([event.course, event.done ? "완료" : event.due?.formatted(.dateTime.month().day().hour().minute()) ?? "기한 없음"].filter { !$0.isEmpty }.joined(separator: ", "))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    if card { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }
+                }
+                .padding(card ? 11 : 0)
+                .contentShape(Rectangle())
+                .background {
+                    if card { RoundedRectangle(cornerRadius: 15).fill(Color(uiColor: .secondarySystemGroupedBackground)) }
+                }
+                .overlay {
+                    if card { RoundedRectangle(cornerRadius: 15).strokeBorder(.primary.opacity(0.07)).allowsHitTesting(false) }
                 }
             }
+            .buttonStyle(.plain)
         }
     }
 }
@@ -406,14 +556,19 @@ struct CalixCourseList: View {
             (search.isEmpty || name.localizedCaseInsensitiveContains(search)) &&
                 (!pendingOnly || groups[name, default: []].contains { !$0.done })
         }
-        List {
+        VesperPage {
             Toggle("미완료 있는 과목", isOn: $pendingOnly)
+                .font(.subheadline.weight(.medium))
+                .padding(13).vesperSurface()
             ForEach(names, id: \.self) { name in
                 let events = groups[name, default: []].ordered
                 let done = events.filter(\.done).count
-                Section(name) {
-                    ProgressView(value: Double(done), total: Double(max(1, events.count))) { Text("완료 \(done)/\(events.count)") }
-                    ForEach(events) { EventLink(id: $0.id, library: library) }
+                VesperSection(title: LocalizedStringKey(name)) {
+                    ProgressView(value: Double(done), total: Double(max(1, events.count))) {
+                        Text("완료 \(done)/\(events.count)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(13).vesperSurface()
+                    ForEach(events) { EventLink(id: $0.id, library: library, card: true) }
                 }
             }
             if names.isEmpty { ContentUnavailableView("표시할 과목이 없습니다", systemImage: "books.vertical") }
@@ -433,15 +588,19 @@ struct CalixCalendar: View {
     var body: some View {
         let key = CalixData.dayKey(date)
         let events = library.data.events.filter { $0.due.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false }.ordered
-        List {
-            DatePicker("날짜", selection: $date, displayedComponents: .date).datePickerStyle(.graphical)
-            Section {
+        VesperPage {
+            DatePicker("날짜", selection: $date, displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .padding(12)
+                .vesperSurface()
+            VesperSection(title: LocalizedStringKey(date.formatted(.dateTime.month().day().weekday()))) {
                 if let name = library.data.holidays[key] { Label(name, systemImage: "calendar.badge.checkmark") }
                 if let name = library.data.offDays[key] { Label(name, systemImage: "moon.zzz") }
                 if events.isEmpty { Text("선택한 날짜에 마감할 일정이 없습니다.").foregroundStyle(.secondary) }
-                ForEach(events) { EventLink(id: $0.id, library: library) }
-            } header: { Text(date.formatted(.dateTime.month().day().weekday())) }
+                ForEach(events) { EventLink(id: $0.id, library: library, card: true) }
+            }
             Button("휴일 이름 편집") { holiday = library.data.holidays[key] ?? ""; editingHoliday = true }
+                .font(.subheadline)
         }
         .navigationTitle("달력")
         .toolbar { Button { adding = true } label: { Label("일정 추가", systemImage: "plus") } }

@@ -7,8 +7,8 @@ struct CalixMore: View {
     let library: CalixLibrary
 
     var body: some View {
-        List {
-            Section("학습") {
+        VesperPage {
+            VesperSection(title: "학습") {
                 destination("시간표", "rectangle.split.3x3") { CalixTimetable(library: library) }
                 destination("체크리스트", "checklist") { CalixChecklist(library: library) }
                 destination("학점 계산기", "graduationcap") { CalixGrades(library: library) }
@@ -17,12 +17,12 @@ struct CalixMore: View {
                 }
                 destination("학교 동기화", "arrow.triangle.2.circlepath") { CalixCanvas(library: library) }
             }
-            Section("기록") {
+            VesperSection(title: "기록") {
                 destination("집중 타이머", "timer") { CalixStudy(library: library) }
                 destination("일기장", "book.closed") { CalixDiary(library: library, secret: false) }
                 destination("비밀 일기", "lock.doc") { CalixDiary(library: library, secret: true) }
             }
-            Section("Calix") {
+            VesperSection(title: "Calix") {
                 destination("설정", "gearshape") { CalixSettings(library: library) }
                 Button { library.locked = true } label: { Label("지금 잠금", systemImage: "lock") }
                     .disabled(!library.data.preferences.lockOnBackground)
@@ -32,7 +32,20 @@ struct CalixMore: View {
     }
 
     private func destination<Content: View>(_ title: LocalizedStringKey, _ symbol: String, @ViewBuilder content: () -> Content) -> some View {
-        NavigationLink(destination: content) { Label(title, systemImage: symbol) }
+        NavigationLink(destination: content) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .frame(width: 33, height: 33)
+                    .foregroundStyle(library.data.preferences.theme.accent)
+                    .background(library.data.preferences.theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                Text(title).font(.subheadline.weight(.semibold))
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(9)
+            .vesperSurface()
+        }
+        .buttonStyle(.plain)
     }
 }
 

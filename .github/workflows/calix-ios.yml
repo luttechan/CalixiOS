@@ -70,6 +70,15 @@ jobs:
             sleep 3
             xcrun simctl io "$device" screenshot "$RUNNER_TEMP/calix-artifacts/Calix-$page.png"
           done
+          xcrun simctl terminate "$device" "$bundle_id" || true
+          xcrun simctl launch "$device" "$bundle_id" -calix-screenshot home
+          (
+            xcrun simctl io "$device" recordVideo --codec=h264 "$RUNNER_TEMP/calix-artifacts/Calix-Vesper-demo.mp4" &
+            recording=$!
+            sleep 6
+            kill -INT "$recording" 2>/dev/null || true
+            wait "$recording" || true
+          )
 
       - name: Upload simulator build and screenshot
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
