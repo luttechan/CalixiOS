@@ -285,7 +285,8 @@ private struct EventDetails: View {
                     LabeledContent("마감", value: event.due?.formatted(.dateTime.month().day().hour().minute()) ?? "기한 없음")
                     if let status = event.syncStatus {
                         let labels = ["missing": "미제출", "graded": "채점 완료", "late": "지각", "submitted": "제출 완료",
-                                      "attendance": "출석", "present": "출석", "excused": "공결", "absent": "결석"]
+                                      "attendance": "출석", "present": "출석", "excused": "공결", "absent": "결석",
+                                      "unverified": "시청 미확인"]
                         if let label = labels[status] { LabeledContent("상태", value: label) }
                     }
                     if let url = event.url { Link("Canvas에서 열기", destination: url) }

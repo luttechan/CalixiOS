@@ -144,10 +144,33 @@ const gather = async (row) => {
     const cached = typeof knownModules === "object" && knownModules !== null ? knownModules[courseID] : null;
     const [assigned, videos, attendance, submissions] = await Promise.allSettled([
         readAssignments(base),
-        request(learning + "/modules?include_detail=true", true, cached).then((response) => ({
-            rows: response.unchanged ? null : readVideos(name, courseID, response.data),
-            unchanged: response.unchanged === true, validator: response.validator,
-        })),
+        (async () => {
+            const fallback = typeof window !== "undefined" ? window[Symbol.for("calix.canvas.modules")] : null;
+            let response, rows, error;
+            try {
+                response = await request(learning + "/modules?include_detail=true", true, cached);
+                if (response.unchanged) return { rows: null, unchanged: true, validator: response.validator };
+                rows = readVideos(name, courseID, response.data);
+                if (rows.length || !fallback) return { rows, validator: response.validator };
+            } catch (reason) {
+                error = reason;
+            }
+            if (fallback) {
+                const native = await fallback.collect(Number(courseID));
+                const items = native.items.flatMap((item) => {
+                    const itemID = id(item.id);
+                    if (!itemID || !item.title) return [];
+                    return [{
+                        id: `canvas:${courseID}:video:${itemID}`, title: clip(item.title), course: name, kind: "영상",
+                        due: date(item.content_details?.due_at), done: item.completed === true,
+                        status: item.completed === null ? "unverified" : null, url: link(item.url),
+                    }];
+                });
+                if (items.length || native.complete) return { rows: items, partial: !native.complete };
+            }
+            if (error) throw error;
+            return { rows: rows ?? [], validator: response?.validator };
+        })(),
         includeAttendance ? readAttendance(name, courseID, learning) : Promise.resolve(null),
         list(base + `/students/submissions?student_ids[]=${owner}&include[]=submission_comments&include[]=rubric_assessment&per_page=100`)
     ]);
@@ -178,6 +201,7 @@ const gather = async (row) => {
     }) : null;
     const modules = videos.status === "fulfilled" ? videos.value : null;
     return { id: courseID, name, assignments, videos: modules?.rows ?? null, modulesUnchanged: modules?.unchanged ?? false,
+        modulesPartial: modules?.partial ?? false,
         modulesVerified: !!modules, modulesValidator: modules?.validator ?? null,
         attendance: attendance.status === "fulfilled" ? attendance.value : null };
 };

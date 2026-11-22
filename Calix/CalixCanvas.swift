@@ -121,7 +121,10 @@ struct CalixCanvas: View {
             defer { syncTask = nil }
             do {
                 guard let path = Bundle.main.url(forResource: "CanvasSync", withExtension: "js") else { throw CocoaError(.fileReadNoSuchFile) }
-                let script = try String(contentsOf: path, encoding: .utf8)
+                guard let modules = Bundle.main.url(forResource: "CanvasModules", withExtension: "js") else {
+                    throw CocoaError(.fileReadNoSuchFile)
+                }
+                let script = try String(contentsOf: modules, encoding: .utf8) + "\n" + String(contentsOf: path, encoding: .utf8)
                 let includeAttendance = library.data.preferences.syncAttendance ?? library.data.preferences.showAttendance
                 let arguments: [String: Any] = [
                     "expectedOwner": library.data.canvasID ?? "",
@@ -145,7 +148,7 @@ struct CalixCanvas: View {
                     return
                 }
                 let partial = resultData.courses.filter {
-                    $0.assignments == nil || ($0.videos == nil && $0.modulesUnchanged != true) ||
+                    $0.assignments == nil || $0.modulesPartial == true || ($0.videos == nil && $0.modulesUnchanged != true) ||
                         (includeAttendance && $0.attendance == nil)
                 }.count
                 let received = resultData.courses.reduce(0) { $0 + ($1.assignments?.count ?? 0) + ($1.videos?.count ?? 0) }
@@ -171,6 +174,7 @@ struct CanvasSnapshot: Decodable {
         let modulesUnchanged: Bool?
         let modulesVerified: Bool?
         let modulesValidator: String?
+        let modulesPartial: Bool?
     }
 
     struct Row: Decodable {
@@ -186,7 +190,8 @@ struct CanvasSnapshot: Decodable {
 
         func event(previous: CalixEvent?) -> CalixEvent {
             CalixEvent(id: id, title: previous?.customTitle ?? title, course: course, kind: kind, due: due, note: previous?.note ?? "",
-                       done: previous?.manualCompletion ?? done, starred: previous?.starred ?? false, remote: true,
+                       done: previous?.manualCompletion ?? (status == "unverified" ? (previous?.done ?? done) : done),
+                       starred: previous?.starred ?? false, remote: true,
                        manualCompletion: previous?.manualCompletion, url: url.flatMap { CanvasBrowser.isCampus($0) ? $0 : nil },
                        feedback: feedback ?? previous?.feedback, customTitle: previous?.customTitle, syncStatus: status)
         }

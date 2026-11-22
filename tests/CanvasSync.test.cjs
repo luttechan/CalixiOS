@@ -6,7 +6,7 @@ const { test } = require("node:test");
 const origin = "https://canvas.bufs.ac.kr";
 const script = fs.readFileSync(path.join(__dirname, "../Calix/CanvasSync.js"), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const sync = new AsyncFunction("expectedOwner", "includeAttendance", "location", "document", "fetch", "knownModules", script);
+const sync = new AsyncFunction("expectedOwner", "includeAttendance", "location", "document", "fetch", "knownModules", "window", script);
 const root = "/learningx/api/v1/courses/42";
 const fixtures = new Map([
     ["/api/v1/users/self/profile", { id: 13 }],
@@ -57,8 +57,8 @@ function transport({ fail, carryNext = false, deep = false, unchanged = false } 
     };
 }
 
-const run = (owner, attendance, fetch, validators) =>
-    sync(owner, attendance, { origin }, { cookie: "xn_api_token=fixture-token" }, fetch, validators).then(JSON.parse);
+const run = (owner, attendance, fetch, validators, window) =>
+    sync(owner, attendance, { origin }, { cookie: "xn_api_token=fixture-token" }, fetch, validators, window).then(JSON.parse);
 
 test("projects paginated assignments, LearningX video, and explicit attendance states", async () => {
     const value = await run("13", true, transport({ carryNext: true }));
@@ -95,4 +95,20 @@ test("extracts deeply nested videos and keeps cached modules on 304", async () =
     assert.equal(cached.modulesUnchanged, true);
     assert.equal(cached.modulesVerified, true);
     assert.equal(cached.assignments[0].status, "graded");
+});
+
+test("keeps available native Canvas modules when LearningX fails", async () => {
+    const window = {
+        [Symbol.for("calix.canvas.modules")]: {
+            collect: async (course) => {
+                assert.equal(course, 42);
+                return { complete: false, items: [{ id: 91, title: "Module media", completed: null,
+                    url: origin + "/courses/42/modules/items/91", content_details: {} }] };
+            },
+        },
+    };
+    const [course] = (await run("13", false, transport({ fail: root + "/modules" }), {}, window)).courses;
+    assert.equal(course.modulesPartial, true);
+    assert.equal(course.videos[0].id, "canvas:42:video:91");
+    assert.equal(course.videos[0].status, "unverified");
 });
