@@ -1,10 +1,11 @@
 if (location.origin !== "https://canvas.bufs.ac.kr") throw Error("AUTH_REQUIRED");
 
 const parse = (body) => JSON.parse(body.trimStart().replace(/^while\s*\(\s*1\s*\)\s*;/, ""));
-const request = async (path, learning = false) => {
+const request = async (path, learning = false, validator = null) => {
     const url = new URL(path, location.origin);
     if (url.origin !== location.origin) throw Error("UNEXPECTED_ORIGIN");
     const headers = { Accept: "application/json" };
+    if (typeof validator === "string" && /^"[^"\r\n]{1,250}"$/.test(validator)) headers["If-None-Match"] = validator;
     if (learning) {
         const token = document.cookie.match(/(?:^|;\s*)xn_api_token=([^;]*)/)?.[1];
         if (token) headers.Authorization = "Bearer " + decodeURIComponent(token);
@@ -14,10 +15,13 @@ const request = async (path, learning = false) => {
     try {
         const res = await fetch(url, { credentials: "same-origin", redirect: "error", headers, signal: controller.signal });
         if (res.status === 401 || res.status === 403) throw Error("AUTH_REQUIRED");
+        if (res.status === 304 && headers["If-None-Match"]) return { unchanged: true, validator };
         if (!res.ok) throw Error(`HTTP_${res.status}`);
         const body = await res.text();
         if (body.length > 8000000) throw Error("RESPONSE_TOO_LARGE");
-        return { data: parse(body), next: res.headers.get("Link")?.match(/<([^>]+)>;\s*rel="next"/)?.[1] };
+        const etag = res.headers.get("ETag");
+        return { data: parse(body), next: res.headers.get("Link")?.match(/<([^>]+)>;\s*rel="next"/)?.[1],
+            validator: etag && /^"[^"\r\n]{1,250}"$/.test(etag) ? etag : null };
     } finally { clearTimeout(timer); }
 };
 
@@ -53,23 +57,31 @@ const readVideos = (course, courseID, body) => {
     const roots = Array.isArray(body) ? body : body?.modules;
     if (!Array.isArray(roots)) throw Error("INVALID_MODULES");
     const events = new Map();
-    const inspect = (row, depth) => {
-        if (!row || typeof row !== "object" || depth > 10 || row.published === false) return;
+    const pending = [roots];
+    let visited = 0;
+    while (pending.length) {
+        const row = pending.pop();
+        if (!row || typeof row !== "object" || row.published === false) continue;
+        if (++visited > 40000) throw Error("MODULE_LIMIT");
         const data = row.content_data;
         const media = data?.item_content_data;
-        const type = media?.content_type || data?.item_content_type || row.content_type;
-        const itemID = id(row.module_item_id);
-        const movingImage = mediaTypes.has(type) || (type === "embed" && mediaTypes.has(media?.content_subtype)) ||
+        const type = String(media?.content_type || data?.item_content_type || row.content_type || "").toLowerCase();
+        const itemID = id(row.module_item_id ?? data?.module_item_id);
+        const movingImage = mediaTypes.has(type) || (type === "embed" && mediaTypes.has(String(media?.content_subtype || "").toLowerCase())) ||
             (media?.progress_support === true && Number(media.duration) > 0);
         const title = clip(row.title || data?.title || media?.title);
         if (itemID && data && movingImage && title) {
             const key = `canvas:${courseID}:video:${itemID}`;
-            events.set(key, { id: key, title, course, kind: "영상", due: date(row.due_at || data.due_at),
-                done: row.completed === true, url: link(row.html_url) || link(`/courses/${courseID}/modules`) });
+            const status = String(row.attendance_status ?? data?.attendance_status ?? "").toLowerCase();
+            const due = date(row.due_at || data.due_at || media?.due_at || data?.lecture_periods?.due_at);
+            const done = row.completed === true || ["attendance", "present", "excused", "late", "complete", "completed"].includes(status);
+            const previous = events.get(key);
+            events.set(key, { id: key, title, course, kind: "영상", due: due ?? previous?.due ?? null,
+                done: done || previous?.done === true, status: status || previous?.status || null,
+                url: link(row.html_url) || link(`/courses/${courseID}/modules`) });
         }
-        for (const child of Object.values(row)) inspect(child, depth + 1);
-    };
-    inspect(roots, 0);
+        for (const child of Object.values(row).reverse()) if (child && typeof child === "object") pending.push(child);
+    }
     return [...events.values()];
 };
 
@@ -129,9 +141,13 @@ const gather = async (row) => {
     const name = clip(row.name || row.course_code) || `과목 ${courseID}`;
     const base = `/api/v1/courses/${courseID}`;
     const learning = `/learningx/api/v1/courses/${courseID}`;
+    const cached = typeof knownModules === "object" && knownModules !== null ? knownModules[courseID] : null;
     const [assigned, videos, attendance, submissions] = await Promise.allSettled([
         readAssignments(base),
-        request(learning + "/modules?include_detail=true", true).then((response) => readVideos(name, courseID, response.data)),
+        request(learning + "/modules?include_detail=true", true, cached).then((response) => ({
+            rows: response.unchanged ? null : readVideos(name, courseID, response.data),
+            unchanged: response.unchanged === true, validator: response.validator,
+        })),
         includeAttendance ? readAttendance(name, courseID, learning) : Promise.resolve(null),
         list(base + `/students/submissions?student_ids[]=${owner}&include[]=submission_comments&include[]=rubric_assessment&per_page=100`)
     ]);
@@ -155,9 +171,14 @@ const gather = async (row) => {
         }
         return [{ id: `canvas:${courseID}:assignment:${assignmentID}`, title: clip(item.name), course: name, kind: "과제",
             due: date(item.due_at), done: Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded",
-            url: link(item.html_url) || link(`${base.replace("/api/v1", "")}/assignments/${assignmentID}`), feedback: labels.join("\n").slice(0, 6000) || null }];
+            url: link(item.html_url) || link(`${base.replace("/api/v1", "")}/assignments/${assignmentID}`),
+            status: submission?.missing ? "missing" : workflow === "graded" ? "graded" : submission?.late ? "late" :
+                (workflow === "submitted" || submission?.submitted_at) ? "submitted" : null,
+            feedback: labels.join("\n").slice(0, 6000) || null }];
     }) : null;
-    return { id: courseID, name, assignments, videos: videos.status === "fulfilled" ? videos.value : null,
+    const modules = videos.status === "fulfilled" ? videos.value : null;
+    return { id: courseID, name, assignments, videos: modules?.rows ?? null, modulesUnchanged: modules?.unchanged ?? false,
+        modulesVerified: !!modules, modulesValidator: modules?.validator ?? null,
         attendance: attendance.status === "fulfilled" ? attendance.value : null };
 };
 

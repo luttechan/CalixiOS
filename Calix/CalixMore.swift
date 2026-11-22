@@ -191,7 +191,7 @@ private struct CalixSettings: View {
             }
             Section("화면") {
                 Picker("테마", selection: setting(\.theme)) { ForEach(CalixTheme.allCases) { Text($0.rawValue).tag($0) } }
-                Toggle("출결 표시 및 동기화", isOn: setting(\.showAttendance))
+                Toggle("출결 표시", isOn: setting(\.showAttendance))
             }
             Section("보안") {
                 Toggle("앱을 나갈 때 잠금", isOn: lockSetting(\.lockOnBackground))
@@ -199,13 +199,25 @@ private struct CalixSettings: View {
             }
             Section("알림") {
                 Toggle("마감 알림", isOn: Binding(get: { library.data.preferences.notify }, set: { enabled in Task { await library.setReminders(enabled) } }))
-                Picker("알림 시점", selection: setting(\.notifyMinutes)) {
-                    ForEach([10, 30, 60, 120, 1440], id: \.self) { Text("\($0)분 전").tag($0) }
-                }.disabled(!library.data.preferences.notify)
-                Toggle("알림 소리", isOn: setting(\.notifySound))
+                if library.data.preferences.notify {
+                    Toggle("일반 마감", isOn: optionalSetting(\.standardReminders, default: true))
+                    if library.data.preferences.standardReminders != false {
+                        Stepper("\(library.data.preferences.standardDays ?? 1)일 전", value: optionalSetting(\.standardDays, default: 1), in: 1...30)
+                    }
+                    Toggle("긴급 마감", isOn: optionalSetting(\.urgentReminders, default: true))
+                    if library.data.preferences.urgentReminders != false {
+                        Picker("긴급 알림 시점", selection: optionalSetting(\.urgentMinutes, default: 60)) {
+                            ForEach(Array(Set([10, 30, 60, 120, 180, 300, library.data.preferences.urgentMinutes ?? 60])).sorted(), id: \.self) { minutes in
+                                Text(minutes % 60 == 0 ? "\(minutes / 60)시간 전" : "\(minutes)분 전").tag(minutes)
+                            }
+                        }
+                    }
+                    Toggle("알림 소리", isOn: setting(\.notifySound))
+                }
             }
             Section("학교 계정") {
                 NavigationLink("학교 동기화") { CalixCanvas(library: library) }
+                Toggle("출결 동기화", isOn: optionalSetting(\.syncAttendance, default: library.data.preferences.showAttendance))
                 Button("로그아웃", role: .destructive) { confirmSignOut = true }
             }
             Section("데이터 관리") {
@@ -214,8 +226,8 @@ private struct CalixSettings: View {
                 Button("기기 데이터 초기화", role: .destructive) { confirmReset = true }
             }
             Section("앱 정보") {
-                Button("Calix iOS \(Self.version)") { about = true }
-                if let url = URL(string: "https://luttechan.github.io/calix/") { Link("Calix 홈페이지", destination: url) }
+                Button("Calix Vesper \(Self.version)") { about = true }
+                if let url = URL(string: "https://luttechan.github.io/calix/vesper/") { Link("Calix Vesper", destination: url) }
             }
         }
         .navigationTitle("설정")
@@ -244,6 +256,7 @@ private struct CalixSettings: View {
             Button("로그아웃하고 학교 데이터 지우기", role: .destructive) {
                 if library.update({ data in
                     data.canvasID = nil; data.lastSync = nil; data.events.removeAll(where: \.remote); data.attendance.removeAll()
+                    data.moduleValidators = nil; data.canvasCourses = nil
                 }) { Task { await CanvasBrowser.clearSession() } }
             }
         } message: { Text("이 기기에 동기화된 학교 일정과 출결이 지워집니다.") }
@@ -252,7 +265,7 @@ private struct CalixSettings: View {
                 if library.update({ $0 = CalixData() }) { Task { await CanvasBrowser.clearSession() }; library.refreshReminders() }
             }
         }
-        .alert("Calix iOS \(Self.version)", isPresented: $about) { Button("닫기", role: .cancel) {} }
+        .alert("Calix Vesper \(Self.version)", isPresented: $about) { Button("닫기", role: .cancel) {} }
         message: { Text("Lutein Studio\n부산외대 Canvas 일정 관리") }
     }
 
@@ -260,6 +273,12 @@ private struct CalixSettings: View {
 
     private func setting<Value>(_ key: WritableKeyPath<CalixPreferences, Value>) -> Binding<Value> {
         Binding(get: { library.data.preferences[keyPath: key] }, set: { value in library.update { $0.preferences[keyPath: key] = value } })
+    }
+
+    private func optionalSetting<Value>(_ key: WritableKeyPath<CalixPreferences, Value?>, default fallback: Value) -> Binding<Value> {
+        Binding(get: { library.data.preferences[keyPath: key] ?? fallback }, set: { value in
+            library.update { $0.preferences[keyPath: key] = value }
+        })
     }
 
     private func lockSetting(_ key: WritableKeyPath<CalixPreferences, Bool>) -> Binding<Bool> {
@@ -293,6 +312,8 @@ private struct CalixSettings: View {
             exported.grades.removeAll()
             exported.attendance.removeAll()
             exported.canvasID = nil
+            exported.canvasCourses = nil
+            exported.moduleValidators = nil
             exported.lastSync = nil
             exported.focus = nil
             backupDocument = try CalixBackup(contents: JSONEncoder().encode(exported))

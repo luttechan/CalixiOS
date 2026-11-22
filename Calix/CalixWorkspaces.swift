@@ -229,12 +229,17 @@ struct CalixGrades: View {
     @State private var term: String?
     @State private var editing: CalixGrade?
     @State private var search = ""
+    @State private var showReset = false
 
     var body: some View {
         let selected = term ?? library.data.preferences.mainTerm
         let scale = library.data.gradeScales?[selected] ?? library.data.preferences.gradeScale
         let items = library.data.grades.filter { $0.term == selected }
-        let terms = Set(library.data.grades.map(\.term) + [selected, library.data.preferences.mainTerm]).sorted()
+        let roster = Array((library.data.canvasCourses ?? [:]).values)
+        let terms = Set(library.data.grades.map(\.term) + roster.map(\.term) + [selected, library.data.preferences.mainTerm]).sorted()
+        let registeredIDs = Set(items.compactMap(\.canvasCourseID))
+        let registeredNames = Set(items.filter { $0.canvasCourseID == nil }.map { $0.title.trimmed })
+        let importable = roster.filter { $0.term == selected && !registeredIDs.contains($0.id) && !registeredNames.contains($0.name.trimmed) }
         let included = items.filter { $0.excluded != true }
         let credits = included.filter { gradePoints($0.mark, scale: scale) != nil }.reduce(0.0) { $0 + $1.credits }
         let points = included.reduce(0.0) { $0 + (gradePoints($1.mark, scale: scale) ?? 0) * $1.credits }
@@ -262,7 +267,30 @@ struct CalixGrades: View {
                     }
                 }
                 .searchable(text: $search, prompt: "과목 검색")
-                .toolbar { Button { editing = CalixGrade(term: selected) } label: { Label("과목 추가", systemImage: "plus") } }
+                .toolbar {
+                    Button { editing = CalixGrade(term: selected) } label: { Label("과목 추가", systemImage: "plus") }
+                    Menu {
+                        Button("Canvas 과목 일괄 가져오기") {
+                            library.update { data in
+                                data.grades.append(contentsOf: importable.sorted { $0.name < $1.name }.map {
+                                    CalixGrade(title: $0.name, term: selected, credits: 0, mark: "", canvasCourseID: $0.id)
+                                })
+                            }
+                        }.disabled(importable.isEmpty)
+                        Button("초기화", role: .destructive) { showReset = true }.disabled(library.data.grades.isEmpty)
+                    } label: { Label("학점 관리", systemImage: "ellipsis.circle") }
+                }
+                .confirmationDialog("학점 기록을 초기화할까요?", isPresented: $showReset, titleVisibility: .visible) {
+                    Button("현재 학기 초기화", role: .destructive) {
+                        library.update { data in
+                            data.grades.removeAll { $0.term == selected }
+                            data.gradeScales?.removeValue(forKey: selected)
+                        }
+                    }
+                    Button("전체 초기화", role: .destructive) {
+                        library.update { data in data.grades.removeAll(); data.gradeScales = nil }
+                    }
+                }
             } else {
                 ProtectedView(library: library, title: "학점 계산기", access: $authorized)
             }

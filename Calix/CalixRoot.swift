@@ -234,6 +234,11 @@ private struct EventDetails: View {
                     LabeledContent("과목", value: event.course.isEmpty ? "개인 일정" : event.course)
                     LabeledContent("유형", value: event.kind.rawValue)
                     LabeledContent("마감", value: event.due?.formatted(.dateTime.month().day().hour().minute()) ?? "기한 없음")
+                    if let status = event.syncStatus {
+                        let labels = ["missing": "미제출", "graded": "채점 완료", "late": "지각", "submitted": "제출 완료",
+                                      "attendance": "출석", "present": "출석", "excused": "공결", "absent": "결석"]
+                        if let label = labels[status] { LabeledContent("상태", value: label) }
+                    }
                     if let url = event.url { Link("Canvas에서 열기", destination: url) }
                     if let feedback = event.feedback { Text(feedback) }
                     if !event.note.isEmpty { Text(event.note) }
@@ -283,8 +288,8 @@ struct EventEditor: View {
     var body: some View {
         Form {
             Section("일정") {
-                if draft.remote { Text(draft.title) } else {
-                    TextField("제목", text: $draft.title)
+                TextField("제목", text: $draft.title)
+                if !draft.remote {
                     TextField("과목", text: $draft.course)
                     Picker("유형", selection: $draft.kind) { ForEach(EventKind.allCases) { Text($0.rawValue).tag($0) } }
                     Toggle("마감 설정", isOn: Binding(get: { draft.due != nil }, set: { draft.due = $0 ? .now : nil }))
@@ -313,7 +318,13 @@ struct EventEditor: View {
                     draft.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
                     if library.update({ data in
                         if let index = data.events.firstIndex(where: { $0.id == draft.id }) {
-                            if draft.remote { data.events[index].note = draft.note }
+                            if draft.remote {
+                                if data.events[index].title != draft.title {
+                                    data.events[index].customTitle = draft.title
+                                    data.events[index].title = draft.title
+                                }
+                                data.events[index].note = draft.note
+                            }
                             else { data.events[index] = draft }
                         } else if !draft.remote {
                             guard copies > 1, let date = draft.due else { data.events.append(draft); return }

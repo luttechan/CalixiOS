@@ -6,7 +6,7 @@ const { test } = require("node:test");
 const origin = "https://canvas.bufs.ac.kr";
 const script = fs.readFileSync(path.join(__dirname, "../Calix/CanvasSync.js"), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const sync = new AsyncFunction("expectedOwner", "includeAttendance", "location", "document", "fetch", script);
+const sync = new AsyncFunction("expectedOwner", "includeAttendance", "location", "document", "fetch", "knownModules", script);
 const root = "/learningx/api/v1/courses/42";
 const fixtures = new Map([
     ["/api/v1/users/self/profile", { id: 13 }],
@@ -28,7 +28,7 @@ const fixtures = new Map([
     [root + "/attendance_items/summary", { attendance_summaries: { 8: { attendance_status: "attendance" } } }],
 ]);
 
-function transport({ fail, carryNext = false } = {}) {
+function transport({ fail, carryNext = false, deep = false, unchanged = false } = {}) {
     return async (url, settings) => {
         assert.equal(url.origin, origin);
         assert.equal(settings.credentials, "same-origin");
@@ -37,8 +37,19 @@ function transport({ fail, carryNext = false } = {}) {
         if (fail === url.pathname) throw Error("offline");
         assert.ok(fixtures.has(url.pathname), `unexpected path ${url.pathname}`);
         const page = url.searchParams.get("page");
-        const payload = page === "2" ? [] : fixtures.get(url.pathname);
+        let payload = page === "2" ? [] : fixtures.get(url.pathname);
         const headers = new Headers();
+        if (url.pathname === root + "/modules") {
+            headers.set("ETag", '"modules-version-1"');
+            if (unchanged) {
+                assert.equal(settings.headers["If-None-Match"], '"modules-version-1"');
+                return { status: 304, ok: false, headers };
+            }
+            if (deep) {
+                for (let level = 0; level < 16; ++level) payload = { children: [payload] };
+                payload = { modules: [payload] };
+            }
+        }
         if (carryNext && url.pathname === "/api/v1/courses" && !page) {
             headers.set("Link", `<${origin}/api/v1/courses?page=2>; rel="next"`);
         }
@@ -46,7 +57,8 @@ function transport({ fail, carryNext = false } = {}) {
     };
 }
 
-const run = (owner, attendance, fetch) => sync(owner, attendance, { origin }, { cookie: "xn_api_token=fixture-token" }, fetch).then(JSON.parse);
+const run = (owner, attendance, fetch, validators) =>
+    sync(owner, attendance, { origin }, { cookie: "xn_api_token=fixture-token" }, fetch, validators).then(JSON.parse);
 
 test("projects paginated assignments, LearningX video, and explicit attendance states", async () => {
     const value = await run("13", true, transport({ carryNext: true }));
@@ -72,4 +84,15 @@ test("marks partial lists unavailable while preserving successfully fetched data
 test("rejects switching accounts or executing outside the school origin", async () => {
     await assert.rejects(run("99", true, transport()), /ACCOUNT_CHANGED/);
     await assert.rejects(sync("", false, { origin: "https://outside.invalid" }, {}, transport()), /AUTH_REQUIRED/);
+});
+
+test("extracts deeply nested videos and keeps cached modules on 304", async () => {
+    const [initial] = (await run("13", false, transport({ deep: true }))).courses;
+    assert.equal(initial.videos.length, 1);
+    assert.equal(initial.modulesValidator, '"modules-version-1"');
+    const [cached] = (await run("13", false, transport({ unchanged: true }), { 42: initial.modulesValidator })).courses;
+    assert.equal(cached.videos, null);
+    assert.equal(cached.modulesUnchanged, true);
+    assert.equal(cached.modulesVerified, true);
+    assert.equal(cached.assignments[0].status, "graded");
 });

@@ -19,6 +19,14 @@ struct CalixEvent: Codable, Identifiable, Equatable {
     var url: URL? = nil
     var feedback: String? = nil
     var seriesID: String? = nil
+    var customTitle: String? = nil
+    var syncStatus: String? = nil
+}
+
+struct CanvasCourse: Codable, Identifiable {
+    var id: String
+    var name: String
+    var term: String
 }
 
 enum EventKind: String, Codable, CaseIterable, Identifiable {
@@ -66,6 +74,7 @@ struct CalixGrade: Codable, Identifiable {
     var term = "기본 학기"
     var credits = 3.0
     var mark = "A"
+    var canvasCourseID: String?
     var category: String?
     var excluded: Bool?
 }
@@ -130,7 +139,12 @@ struct CalixPreferences: Codable {
     var focusDoneMessage = "집중 시간이 끝났습니다."
     var gradeScale = 4.5
     var mainTerm = "기본 학기"
-    var showAttendance = true
+    var showAttendance = false
+    var syncAttendance: Bool? = false
+    var urgentMinutes: Int? = 60
+    var urgentReminders: Bool? = true
+    var standardReminders: Bool? = true
+    var standardDays: Int? = 1
 }
 
 struct CalixData: Codable {
@@ -149,6 +163,8 @@ struct CalixData: Codable {
     var offDays: [String: String] = [:]
     var avatar: Data?
     var canvasID: String?
+    var moduleValidators: [String: String]?
+    var canvasCourses: [String: CanvasCourse]?
     var lastSync: Date?
 
     static func dayKey(_ date: Date) -> String {
@@ -196,7 +212,11 @@ final class CalixLibrary {
         do {
             try vault.save(updated)
             let schedulesChanged = updated.events != data.events || updated.preferences.notify != data.preferences.notify ||
-                updated.preferences.notifyMinutes != data.preferences.notifyMinutes || updated.preferences.notifySound != data.preferences.notifySound
+                updated.preferences.notifyMinutes != data.preferences.notifyMinutes || updated.preferences.notifySound != data.preferences.notifySound ||
+                updated.preferences.urgentMinutes != data.preferences.urgentMinutes ||
+                updated.preferences.urgentReminders != data.preferences.urgentReminders ||
+                updated.preferences.standardDays != data.preferences.standardDays ||
+                updated.preferences.standardReminders != data.preferences.standardReminders
             if let focus = data.focus, updated.focus?.id != focus.id {
                 UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["calix.focus.\(focus.id)"])
             }
@@ -278,21 +298,38 @@ final class CalixLibrary {
             guard !Task.isCancelled else { return }
             center.removePendingNotificationRequests(withIdentifiers: pending.map(\.identifier).filter { $0.hasPrefix(prefix) })
             guard data.preferences.notify else { return }
-            let interval = Double(data.preferences.notifyMinutes) * 60
-            let upcoming = data.events.compactMap { event -> (CalixEvent, Date)? in
-                guard !event.done, let due = event.due else { return nil }
-                let fire = due.addingTimeInterval(-interval)
-                guard fire.timeIntervalSinceNow >= 1 else { return nil }
-                return (event, fire)
+            let preferences = data.preferences
+            let limits: [(String, Double, Bool)]
+            if preferences.standardDays == nil && preferences.urgentMinutes == nil &&
+                preferences.standardReminders == nil && preferences.urgentReminders == nil {
+                limits = [("standard", Double(preferences.notifyMinutes) * 60, false)]
+            } else {
+                var rules: [(String, Double, Bool)] = []
+                if preferences.standardReminders != false {
+                    rules.append(("standard", Double(min(365, max(1, preferences.standardDays ?? 1))) * 86400, false))
+                }
+                if preferences.urgentReminders != false {
+                    rules.append(("urgent", Double(min(10080, max(1, preferences.urgentMinutes ?? 60))) * 60, true))
+                }
+                limits = rules
+            }
+            let upcoming = data.events.flatMap { event -> [(CalixEvent, Date, String, Bool)] in
+                guard !event.done, let due = event.due else { return [] }
+                var times = Set<Date>()
+                return limits.reversed().compactMap { label, interval, urgent in
+                    let fire = due.addingTimeInterval(-interval)
+                    guard fire.timeIntervalSinceNow >= 1, times.insert(fire).inserted else { return nil }
+                    return (event, fire, label, urgent)
+                }
             }.sorted { $0.1 < $1.1 }.prefix(50)
-            for (event, fire) in upcoming {
+            for (event, fire, rule, urgent) in upcoming {
                 guard !Task.isCancelled else { return }
                 let content = UNMutableNotificationContent()
-                content.title = "마감 알림"
+                content.title = urgent ? "긴급 마감" : "마감 알림"
                 content.body = event.title
                 if data.preferences.notifySound { content.sound = .default }
                 let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, fire.timeIntervalSinceNow), repeats: false)
-                let id = prefix + event.id
+                let id = prefix + rule + "." + event.id
                 try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
             }
         }

@@ -1,8 +1,8 @@
-name: Calix iOS 0.1 validation
+name: Calix Vesper simulator
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/vesper]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
           mkdir -p "$RUNNER_TEMP/calix-artifacts"
           ditto -c -k --keepParent "$RUNNER_TEMP/Calix/Build/Products/Debug-iphonesimulator/Calix.app" \
-            "$RUNNER_TEMP/calix-artifacts/Calix-iOS-Simulator.zip"
+            "$RUNNER_TEMP/calix-artifacts/Calix-Vesper-Simulator.zip"
 
       - name: Launch on an iPhone simulator
         timeout-minutes: 10
@@ -54,8 +54,17 @@ jobs:
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$app"
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")
+          xcrun simctl launch "$device" "$bundle_id" -calix-smoke
+          data=$(xcrun simctl get_app_container "$device" "$bundle_id" data)
+          for attempt in {1..45}; do
+            test ! -s "$data/Documents/calix-smoke.txt" || break
+            sleep 1
+          done
+          cat "$data/Documents/calix-smoke.txt"
+          grep -Fx 'PASS' "$data/Documents/calix-smoke.txt"
+          cp "$data/Documents/calix-smoke.txt" "$RUNNER_TEMP/calix-artifacts/"
           xcrun simctl status_bar "$device" override --time '9:41' --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState unplugged --batteryLevel 100 || true
-          for page in home deadlines courses more; do
+          for page in home deadlines calendar courses more; do
             xcrun simctl terminate "$device" "$bundle_id" || true
             xcrun simctl launch "$device" "$bundle_id" -calix-screenshot "$page"
             sleep 3
@@ -66,7 +75,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: Calix-iOS-Simulator
+          name: Calix-Vesper-Simulator
           path: ${{ runner.temp }}/calix-artifacts/
           if-no-files-found: error
           retention-days: 14

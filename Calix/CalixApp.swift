@@ -9,6 +9,11 @@ struct CalixApp: App {
         WindowGroup {
             CalixRoot(library: library)
                 .environment(\.locale, Locale(identifier: "ko_KR"))
+                .task {
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("-calix-smoke") { CalixScreenshot.runSmokeCheck() }
+                    #endif
+                }
                 .onChange(of: phase) { _, newPhase in
                     if newPhase == .background { library.backgrounded() }
                     if newPhase == .active { library.finishFocusIfNeeded() }
@@ -19,6 +24,31 @@ struct CalixApp: App {
 
 #if DEBUG
 enum CalixScreenshot {
+    @MainActor static func runSmokeCheck() {
+        let fixture = """
+        {"owner":"13","courses":[{"id":"42","name":"Methods","assignments":[{"id":"canvas:42:assignment:4","title":"New Title","course":"Methods","kind":"과제","done":true,"status":"graded"}],"videos":null,"modulesUnchanged":true,"modulesVerified":true,"modulesValidator":"example"}]}
+        """
+        let report: String
+        do {
+            let snapshot = try JSONDecoder().decode(CanvasSnapshot.self, from: Data(fixture.utf8))
+            var data = CalixData()
+            data.preferences.mainTerm = "검증 학기"
+            data.events = [
+                CalixEvent(id: "canvas:42:assignment:4", title: "Edited", note: "Keep", remote: true, manualCompletion: false, customTitle: "Edited"),
+                CalixEvent(id: "canvas:42:video:8", title: "Cached", kind: .video, remote: true),
+            ]
+            snapshot.merge(into: &data)
+            let assignment = data.events.first { $0.id == "canvas:42:assignment:4" }
+            let valid = data.events.count == 2 && assignment?.title == "Edited" && assignment?.note == "Keep" &&
+                assignment?.done == false && assignment?.syncStatus == "graded" &&
+                data.canvasCourses?["42"]?.term == "검증 학기" && data.moduleValidators?["42"] == "example"
+            report = valid ? "PASS" : "Canvas merge did not preserve expected state"
+        } catch {
+            report = String(describing: error)
+        }
+        try? report.write(to: URL.documentsDirectory.appendingPathComponent("calix-smoke.txt"), atomically: true, encoding: .utf8)
+    }
+
     static var page: String? {
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: "-calix-screenshot"), args.indices.contains(index + 1) else { return nil }

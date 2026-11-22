@@ -122,7 +122,12 @@ struct CalixCanvas: View {
             do {
                 guard let path = Bundle.main.url(forResource: "CanvasSync", withExtension: "js") else { throw CocoaError(.fileReadNoSuchFile) }
                 let script = try String(contentsOf: path, encoding: .utf8)
-                let arguments: [String: Any] = ["expectedOwner": library.data.canvasID ?? "", "includeAttendance": library.data.preferences.showAttendance]
+                let includeAttendance = library.data.preferences.syncAttendance ?? library.data.preferences.showAttendance
+                let arguments: [String: Any] = [
+                    "expectedOwner": library.data.canvasID ?? "",
+                    "knownModules": library.data.canvasID == nil ? [:] : (library.data.moduleValidators ?? [:]),
+                    "includeAttendance": includeAttendance
+                ]
                 let result = try await browser.view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page)
                 try Task.checkCancellation()
                 guard let value = result as? String, value.utf8.count < 20_000_000 else { throw CocoaError(.fileReadCorruptFile) }
@@ -139,7 +144,10 @@ struct CalixCanvas: View {
                     message = "현재 계정과 다릅니다. 설정에서 먼저 로그아웃하세요."
                     return
                 }
-                let partial = resultData.courses.filter { $0.assignments == nil || $0.videos == nil || (library.data.preferences.showAttendance && $0.attendance == nil) }.count
+                let partial = resultData.courses.filter {
+                    $0.assignments == nil || ($0.videos == nil && $0.modulesUnchanged != true) ||
+                        (includeAttendance && $0.attendance == nil)
+                }.count
                 let received = resultData.courses.reduce(0) { $0 + ($1.assignments?.count ?? 0) + ($1.videos?.count ?? 0) }
                 if library.update({ resultData.merge(into: &$0) }) {
                     message = partial > 0 ? "일정 \(received)개를 읽었습니다. \(partial)개 과목의 일부 응답을 받지 못해 기존 기록을 유지했습니다." : "과목 \(resultData.courses.count)개 · 일정 \(received)개 동기화 완료"
@@ -153,13 +161,16 @@ struct CalixCanvas: View {
     }
 }
 
-private struct CanvasSnapshot: Decodable {
+struct CanvasSnapshot: Decodable {
     struct Course: Decodable {
         let id: String
         let name: String
         let assignments: [Row]?
         let videos: [Row]?
         let attendance: [CalixAttendance]?
+        let modulesUnchanged: Bool?
+        let modulesVerified: Bool?
+        let modulesValidator: String?
     }
 
     struct Row: Decodable {
@@ -171,11 +182,13 @@ private struct CanvasSnapshot: Decodable {
         let done: Bool
         let url: URL?
         let feedback: String?
+        let status: String?
 
         func event(previous: CalixEvent?) -> CalixEvent {
-            CalixEvent(id: id, title: title, course: course, kind: kind, due: due, note: previous?.note ?? "",
+            CalixEvent(id: id, title: previous?.customTitle ?? title, course: course, kind: kind, due: due, note: previous?.note ?? "",
                        done: previous?.manualCompletion ?? done, starred: previous?.starred ?? false, remote: true,
-                       manualCompletion: previous?.manualCompletion, url: url.flatMap { CanvasBrowser.isCampus($0) ? $0 : nil }, feedback: feedback)
+                       manualCompletion: previous?.manualCompletion, url: url.flatMap { CanvasBrowser.isCampus($0) ? $0 : nil },
+                       feedback: feedback ?? previous?.feedback, customTitle: previous?.customTitle, syncStatus: status)
         }
     }
 
@@ -185,7 +198,11 @@ private struct CanvasSnapshot: Decodable {
     @MainActor func merge(into data: inout CalixData) {
         var events = Dictionary(data.events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var attendance = Dictionary(data.attendance.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var validators = data.moduleValidators ?? [:]
+        var registered = data.canvasCourses ?? [:]
         for course in courses {
+            registered[course.id] = CanvasCourse(id: course.id, name: course.name, term: registered[course.id]?.term ?? data.preferences.mainTerm)
+            if course.modulesVerified == true { validators[course.id] = course.modulesValidator }
             for row in (course.assignments ?? []) + (course.videos ?? []) { events[row.id] = row.event(previous: events[row.id]) }
             if let rows = course.attendance {
                 attendance = attendance.filter { !$0.key.hasPrefix("lesson:\(course.id):") && !$0.key.hasPrefix("item:\(course.id):") }
@@ -194,7 +211,12 @@ private struct CanvasSnapshot: Decodable {
         }
         data.events = events.values.sorted { $0.id < $1.id }
         data.attendance = attendance.values.sorted { $0.id < $1.id }
+        let active = Set(courses.map(\.id))
+        data.moduleValidators = validators.filter { active.contains($0.key) }
+        data.canvasCourses = registered
         data.canvasID = owner
-        if courses.isEmpty || courses.contains(where: { $0.assignments != nil || $0.videos != nil || $0.attendance != nil }) { data.lastSync = .now }
+        if courses.isEmpty || courses.contains(where: { $0.assignments != nil || $0.modulesVerified == true || $0.attendance != nil }) {
+            data.lastSync = .now
+        }
     }
 }
