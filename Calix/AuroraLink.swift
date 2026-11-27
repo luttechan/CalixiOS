@@ -277,7 +277,7 @@ enum AuroraWorkspace {
             let anchors = link.anchors[kind] ?? [:]
             let known = Set(rows.keys).union(anchors.keys)
             for id in known {
-                let key = "(kind)/(id)"
+                let key = kind + "/" + id
                 guard !conflicts.contains(key) else { continue }
                 let original = baseline[kind]?[id].map(AuroraCodec.fingerprint)
                 let actual = before[kind]?[id].map(AuroraCodec.fingerprint)
@@ -296,7 +296,7 @@ enum AuroraWorkspace {
         let merged = collect(data, link)
         for (kind, rows) in snapshot.records where kinds.contains(kind) {
             if kind == "canvasEdit" && !matchingSchool { continue }
-            for (id, row) in rows where !conflicts.contains("(kind)/(id)") {
+            for (id, row) in rows where !conflicts.contains(kind + "/" + id) {
                 if let value = merged[kind]?[id] {
                     link.anchors[kind, default: [:]][id] = .init(revision: row.revision, local: AuroraCodec.fingerprint(value))
                 }

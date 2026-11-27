@@ -87,7 +87,15 @@ enum CalixScreenshot {
               AuroraWorkspace.offer(data, link, receipt: "none", name: "Fixture").changes.isEmpty else { return false }
         data.events[0].title = "Edited on Vesper"
         let offer = AuroraWorkspace.offer(data, link, receipt: "none", name: "Fixture")
-        return offer.changes["event"]?["manual:sample"]?.base == "111" && offer.changes["journal"] == nil
+        guard offer.changes["event"]?["manual:sample"]?.base == "111", offer.changes["journal"] == nil else { return false }
+        let changed = """
+        {"records":{"event":{"manual:sample":{"revision":"222","value":{"title":"Edited on Aurora"}}}},"conflicts":["event/manual:sample"],"school":[],"attendance":[],"owner":"","mainTerm":"2026학년도 2학기"}
+        """
+        let conflict = try JSONDecoder().decode(AuroraSnapshot.self, from: Data(changed.utf8))
+        let baseline = AuroraWorkspace.collect(data, link)
+        AuroraWorkspace.apply(conflict, baseline: baseline, data: &data, link: &link)
+        return data.events[0].title == "Edited on Vesper" && link.conflicts == 1 &&
+            link.anchors["event"]?["manual:sample"]?.revision == "111"
     }
 
     @MainActor static func runWireCheck() async {
