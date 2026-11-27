@@ -7,10 +7,10 @@ const publishProgress = (stage, completed = 0, total = 0) => {
 };
 
 const parse = (body) => JSON.parse(body.trimStart().replace(/^while\s*\(\s*1\s*\)\s*;/, ""));
-const request = async (path, learning = false, validator = null, timeout = 12000, referrer) => {
+const request = async (path, learning = false, validator = null, timeout = 12000, referrer, markup = false) => {
     const url = new URL(path, location.origin);
     if (url.origin !== location.origin) throw Error("UNEXPECTED_ORIGIN");
-    const headers = { Accept: "application/json" };
+    const headers = { Accept: markup ? "text/html" : "application/json" };
     if (typeof validator === "string" && /^"[^"\r\n]{1,250}"$/.test(validator)) headers["If-None-Match"] = validator;
     if (learning) {
         const token = document.cookie.match(/(?:^|;\s*)xn_api_token=([^;]*)/)?.[1];
@@ -26,7 +26,7 @@ const request = async (path, learning = false, validator = null, timeout = 12000
         const body = await res.text();
         if (body.length > 8000000) throw Error("RESPONSE_TOO_LARGE");
         const etag = res.headers.get("ETag");
-        return { data: parse(body), next: res.headers.get("Link")?.match(/<([^>]+)>;\s*rel="next"/)?.[1],
+        return { data: markup ? body : parse(body), next: res.headers.get("Link")?.match(/<([^>]+)>;\s*rel="next"/)?.[1],
             validator: etag && /^"[^"\r\n]{1,250}"$/.test(etag) ? etag : null };
     } finally { clearTimeout(timer); }
 };
@@ -328,26 +328,90 @@ const readAssignments = async (base) => {
             }
         }
     };
-    let problem = null;
-    let answered = false;
-    try {
-        put(await list(base + "/assignments?include[]=submission&" + query, error => { problem = error; }, referrer));
-        answered = true;
-        if (records.size && !problem && [...records.values()].every(row => firstDate(row.submission?.cached_due_date, row.due_at))) {
-            return {rows: [...records.values()], status: "ok"};
+    let truncated = false;
+    const partial = () => { truncated = true; };
+    const [flat, groups] = await Promise.allSettled([
+        list(base + "/assignments?include[]=submission&" + query, partial, referrer),
+        list(base + "/assignment_groups?include[]=assignments&include[]=discussion_topic&" + query, partial, referrer),
+    ]);
+    if (flat.status === "fulfilled") put(flat.value);
+    if (groups.status === "fulfilled") put(groups.value.flatMap(group => Array.isArray(group.assignments) ? group.assignments : []));
+    if (truncated) return {rows: [...records.values()], status: "partial"};
+    if (records.size) return {rows: [...records.values()], status: flat.status === groups.status ? "ok" : "fallback"};
+    if (flat.status === "rejected" && groups.status === "rejected") return {rows: null, status: failureCode(flat.reason)};
+    return {rows: [], status: "empty"};
+};
+
+const readAssignmentModules = async base => {
+    const modules = await list(base + "/modules?include[]=items&include[]=content_details&per_page=100", () => {});
+    const found = new Map();
+    for (let offset = 0; offset < modules.length; offset += 4) {
+        const pages = await Promise.allSettled(modules.slice(offset, offset + 4).map(async module => {
+            if (module?.published === false || !id(module?.id)) return [];
+            const inline = Array.isArray(module.items) ? module.items : [];
+            if (Number.isInteger(module.items_count) && module.items_count === inline.length) return inline;
+            return list(base + `/modules/${module.id}/items?include[]=content_details&per_page=100`, () => {}).catch(() => inline);
+        }));
+        for (const page of pages) {
+            if (page.status !== "fulfilled") continue;
+            for (const item of page.value) {
+                const key = item?.type === "Assignment" && item.published !== false && id(item.content_id);
+                if (!key) continue;
+                const due = date(item.content_details?.due_at);
+                if (!found.has(key) || due) found.set(key, {id: key, name: clip(item.title), moduleDue: due});
+            }
         }
-    } catch (reason) { problem = failureCode(reason); }
-    try {
-        let groupsPartial = false;
-        const groups = await list(base + "/assignment_groups?include[]=assignments&include[]=discussion_topic&" + query,
-            () => { groupsPartial = true; }, referrer);
-        answered = true;
-        put(groups.flatMap(group => Array.isArray(group.assignments) ? group.assignments : []));
-        if (records.size) return {rows: [...records.values()], status: groupsPartial ? "partial" : problem ? "fallback" : "ok"};
-    } catch (reason) {
-        problem ??= failureCode(reason);
     }
-    return {rows: records.size ? [...records.values()] : answered ? [] : null, status: records.size ? "partial" : problem ?? "empty"};
+    return found;
+};
+
+const assignmentMarkup = async (path, referrer) => {
+    if (typeof document.createElement !== "function") return null;
+    const page = document.createElement("template");
+    if (!page.content) return null;
+    const {data} = await request(path, false, null, 5000, referrer, true);
+    page.innerHTML = data;
+    return page.content;
+};
+
+const readAssignmentPage = async (path, referrer) => {
+    const page = await assignmentMarkup(path, referrer);
+    const name = clip(page?.querySelector(".assignment-title h1")?.textContent?.trim());
+    if (!name) return null;
+    // Canvas renders an epoch timestamp alongside the date and time in the student's view.
+    const timestamps = new Set([...page.querySelectorAll(".timestamp")].filter(node =>
+        node.parentElement?.querySelector(".due_date_string") && node.parentElement?.querySelector(".due_time_string")
+    ).map(node => node.textContent.trim()).filter(value => /^\d{10}$/.test(value)));
+    const epoch = timestamps.size === 1 ? Number([...timestamps][0]) : null;
+    return {name, pageDue: epoch === null ? null : new Date(epoch * 1000).toISOString()};
+};
+
+const readAssignmentIndex = async (referrer, courseID) => {
+    const page = await assignmentMarkup(referrer, referrer);
+    const matches = new Map();
+    for (const anchor of page?.querySelectorAll("a[href]") ?? []) {
+        const address = link(anchor.getAttribute("href"));
+        if (!address) continue;
+        const match = /^\/courses\/([1-9]\d{0,18})\/assignments\/([1-9]\d{0,18})\/?$/.exec(new URL(address).pathname);
+        if (match?.[1] === courseID) matches.set(match[2], {id: match[2]});
+    }
+    return matches;
+};
+
+const collectLearningAssignments = (body, courseID, found) => {
+    const pending = [body];
+    for (let inspected = 0; pending.length && inspected < 40000; inspected++) {
+        const row = pending.pop();
+        if (!row || typeof row !== "object" || row.published === false) continue;
+        if (Array.isArray(row)) { for (const child of row) pending.push(child); continue; }
+        const data = row.content_data;
+        const media = data?.item_content_data;
+        const address = link(row.html_url || row.url || data?.url || media?.url);
+        const match = address && /^\/courses\/([1-9]\d{0,18})\/assignments\/([1-9]\d{0,18})\/?$/.exec(new URL(address).pathname);
+        const key = match?.[1] === courseID ? match[2] : null;
+        if (key) found.set(key, {id: key, name: clip(row.title || data?.title), moduleDue: firstDate(data?.due_at, row.due_at)});
+        for (const child of Object.values(row)) if (child && typeof child === "object") pending.push(child);
+    }
 };
 
 const gather = async (row) => {
@@ -358,10 +422,11 @@ const gather = async (row) => {
     const assignmentPage = location.origin + `/courses/${courseID}/assignments`;
     const learning = `/learningx/api/v1/courses/${courseID}`;
     const cached = typeof knownModules === "object" && knownModules !== null ? knownModules[courseID] : null;
+    const learningAssignments = new Map();
     let attendanceRequest;
     const attendanceItems = () => attendanceRequest ??= request(learning + "/attendance_items?include_detail=true", true);
     const submissionPath = base + `/students/submissions?student_ids[]=${owner}&include[]=submission_comments&include[]=rubric_assessment&per_page=100`;
-    const [assigned, videos, attendance, submissions] = await Promise.allSettled([
+    const [assigned, videos, attendance, submissions, assignmentModules] = await Promise.allSettled([
         readAssignments(base),
         (async () => {
             const fallback = typeof window !== "undefined" ? window[Symbol.for("calix.canvas.modules")] : null;
@@ -369,6 +434,7 @@ const gather = async (row) => {
             try {
                 response = await request(learning + "/modules?include_detail=true", true, cached);
                 if (response.unchanged) return { rows: null, unchanged: true, validator: response.validator };
+                collectLearningAssignments(response.data, courseID, learningAssignments);
                 rows = readVideos(name, courseID, response.data);
                 const needsDates = rows.some(row => !row.due);
                 if (needsDates) await supplementVideoDates(rows, attendanceItems);
@@ -392,7 +458,10 @@ const gather = async (row) => {
                     await readLearningFrame(name, courseID, owner, native?.learningx?.url).catch(() => null);
                 if (rendered !== null) {
                     const refreshed = await request(learning + "/modules?include_detail=true", true, null, 4500)
-                        .then(result => readVideos(name, courseID, result.data)).catch(() => []);
+                        .then(result => {
+                            collectLearningAssignments(result.data, courseID, learningAssignments);
+                            return readVideos(name, courseID, result.data);
+                        }).catch(() => []);
                     await supplementVideoDates(refreshed, () => request(learning + "/attendance_items?include_detail=true", true, null, 4500));
                     const merged = new Map();
                     for (const row of [...items, ...rendered, ...(rows ?? []), ...refreshed]) {
@@ -414,7 +483,8 @@ const gather = async (row) => {
             return { rows: rows ?? [], validator: response?.validator };
         })(),
         includeAttendance ? readAttendance(name, courseID, learning, attendanceItems) : Promise.resolve(null),
-        list(submissionPath, null, assignmentPage)
+        list(submissionPath, null, assignmentPage),
+        readAssignmentModules(base)
     ]);
     const ownSubmissions = rows => rows.filter(row => id(row?.user_id) === owner);
     const enriched = submissions.status === "fulfilled" ? new Map(ownSubmissions(submissions.value)
@@ -432,19 +502,36 @@ const gather = async (row) => {
         }
         if (fromSubmissions.length) assignedItems = fromSubmissions;
     }
-    if (assignmentSource !== "ok" && enriched.size) {
-        const known = new Set((assignedItems ?? []).map(item => id(item.id)));
-        const missing = [...enriched.keys()].filter(key => key && !known.has(key)).slice(0, 24);
-        for (let i = 0; i < missing.length; i += 4) {
-            const results = await Promise.all(missing.slice(i, i + 4).map(async key => {
-                const response = await request(base + `/assignments/${key}?include[]=submission&override_assignment_dates=true`,
-                    false, null, 4000, assignmentPage).catch(() => null);
-                return id(response?.data?.id) === key ? response.data : null;
-            }));
-            const recovered = results.filter(Boolean);
-            if (recovered.length) assignedItems = [...(assignedItems ?? []), ...recovered];
-        }
+    const index = new Map((assignedItems ?? []).map(item => [id(item.id), item]));
+    const discovered = assignmentModules.status === "fulfilled" ? assignmentModules.value : new Map();
+    for (const [key, item] of learningAssignments) {
+        const native = discovered.get(key);
+        if (!native?.moduleDue) discovered.set(key, {...item, name: native?.name || item.name});
     }
+    if (assignmentSource !== "ok" || !index.size) {
+        const page = await readAssignmentIndex(assignmentPage, courseID).catch(() => new Map());
+        for (const [key, item] of page) if (!discovered.has(key)) discovered.set(key, item);
+    }
+    const keys = [...new Set([...index.keys(), ...enriched.keys(), ...discovered.keys()])].filter(key => {
+        const item = index.get(key);
+        return key && (!item || !firstDate(enriched.get(key)?.cached_due_date, item.submission?.cached_due_date, item.due_at));
+    });
+    for (let offset = 0; offset < keys.length; offset += 3) {
+        await Promise.all(keys.slice(offset, offset + 3).map(async key => {
+            const prior = index.get(key);
+            const module = discovered.get(key);
+            const result = await request(base + `/assignments/${key}?include[]=submission&override_assignment_dates=true`,
+                false, null, 4500, assignmentPage).then(response => response.data).catch(() => null);
+            const detail = id(result?.id) === key && (result.course_id == null || id(result.course_id) === courseID) ? result : null;
+            if (detail?.published === false) { index.delete(key); return; }
+            const due = firstDate(enriched.get(key)?.cached_due_date, detail?.submission?.cached_due_date, detail?.due_at);
+            const path = `${assignmentPage}/${key}`;
+            const page = due ? null : await readAssignmentPage(path, assignmentPage).catch(() => null);
+            const name = detail?.name || prior?.name || page?.name || module?.name;
+            if (name) index.set(key, {...prior, ...detail, id: key, name, fallbackDue: page?.pageDue ?? module?.moduleDue});
+        }));
+    }
+    if (assignedItems !== null || index.size) assignedItems = [...index.values()];
     const assignments = assignedItems?.flatMap((item) => {
         const assignmentID = id(item?.id);
         if (!assignmentID || !item.name || item.published === false) return [];
@@ -461,7 +548,7 @@ const gather = async (row) => {
         for (const criterion of Object.values(submission?.rubric_assessment || {})) {
             if (criterion?.comments) labels.push(clip(criterion.comments, 2000));
         }
-        const due = firstDate(submission?.cached_due_date, item.submission?.cached_due_date, item.due_at);
+        const due = firstDate(submission?.cached_due_date, item.submission?.cached_due_date, item.due_at, item.fallbackDue);
         const done = Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded";
         return [{ id: `canvas:${courseID}:assignment:${assignmentID}`, title: clip(item.name), course: name, kind: "과제",
             due, dueKnown: due !== null || (item.due_at === null && !item.has_overrides && submission?.cached_due_date === null),

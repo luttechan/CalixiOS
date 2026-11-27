@@ -14,6 +14,7 @@ const fixtures = new Map([
     ["/api/v1/planner/items", []],
     ["/api/v1/calendar_events", []],
     ["/api/v1/courses/42/assignment_groups", []],
+    ["/api/v1/courses/42/modules", []],
     ["/api/v1/courses/42/assignments", [{
         id: 4, name: "Project", due_at: "2026-11-20T23:59:00+09:00", html_url: "https://outside.invalid/",
         submission: { workflow_state: "graded", submission_comments: [{ comment: "Good" }] },
@@ -321,4 +322,34 @@ test("retrieves a missing assignment by its signed-in student's submission ID", 
     assert.equal(result.courses[0].assignments[0].due, "2026-11-30T14:59:00.000Z");
     assert.equal(result.deadlineReport.planner, "auth");
     assert.ok(calls.includes(detail));
+});
+
+test("scans every Canvas module assignment and accepts same-course LearningX links when the list is incomplete", async () => {
+    const base = "/api/v1/courses/42";
+    const moduleItems = Array.from({ length: 26 }, (_, index) => ({
+        type: "Assignment", content_id: 100 + index, title: `Task ${index}`,
+    }));
+    const requested = [];
+    const reply = data => ({ok:true, headers:new Headers(), text:async () => JSON.stringify(data)});
+    const result = await run("13", false, async (url, options) => {
+        if (url.pathname === base + "/modules") return reply([{id:8,items_count:26}]);
+        if (url.pathname === base + "/modules/8/items") return reply(moduleItems);
+        if (url.pathname === root + "/modules") return reply({modules:[{items:[
+            {title:"LearningX task", url:"/courses/42/assignments/201", content_data:{due_at:"2026-12-08T14:59:00Z"}},
+            {title:"Other course", url:"/courses/99/assignments/202", content_data:{due_at:"2026-12-08T14:59:00Z"}},
+        ]}]});
+        const detail = /\/assignments\/(\d+)$/.exec(url.pathname);
+        if (detail) {
+            requested.push(Number(detail[1]));
+            if (detail[1] === "201") return {status:404, ok:false};
+            return reply({id:Number(detail[1]), name:"Assignment detail", due_at:"2026-12-09T14:59:00Z"});
+        }
+        return transport()(url, options);
+    });
+    const assignments = result.courses[0].assignments;
+    assert.equal(assignments.length, 28);
+    assert.equal(new Set(requested).size, 27);
+    assert.ok(!requested.includes(202));
+    assert.equal(assignments.find(row => row.id.endsWith(":201")).due, "2026-12-08T14:59:00.000Z");
+    assert.ok(assignments.every(row => row.due));
 });

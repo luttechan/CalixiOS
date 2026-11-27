@@ -175,6 +175,7 @@ struct CalixCanvas: View {
 
     private struct SyncReport {
         let assignments: Int
+        let datedAssignments: Int
         let assignmentErrors: Int
         let videoErrors: Int
         let deadline: CanvasSnapshot.DeadlineReport?
@@ -191,6 +192,7 @@ struct CalixCanvas: View {
                     DisclosureGroup("조회 결과") {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("과제 \(report.assignments)개")
+                            Text("과제 마감일 \(report.datedAssignments)개 확인")
                             Text("과제 목록 응답 오류 \(report.assignmentErrors)과목")
                             Text("영상 응답 오류 \(report.videoErrors)과목")
                             if let deadline = report.deadline {
@@ -279,7 +281,8 @@ struct CalixCanvas: View {
                     return
                 }
                 let partial = resultData.courses.filter {
-                    $0.assignments == nil || $0.modulesPartial == true || ($0.videos == nil && $0.modulesUnchanged != true) ||
+                    $0.assignments == nil || Self.failed($0.assignmentSource) || $0.modulesPartial == true ||
+                        ($0.videos == nil && $0.modulesUnchanged != true) ||
                         (includeAttendance && $0.attendance == nil)
                 }.count
                 let incoming = resultData.courses.flatMap { ($0.assignments ?? []) + ($0.videos ?? []) }
@@ -287,13 +290,15 @@ struct CalixCanvas: View {
                 let unconfirmed = incoming.filter { $0.due == nil && $0.dueKnown != true }.count
                 let received = incoming.count
                 if library.update({ resultData.merge(into: &$0) }) {
+                    let assignments = resultData.courses.flatMap { $0.assignments ?? [] }
                     report = SyncReport(
-                        assignments: resultData.courses.reduce(0) { $0 + ($1.assignments?.count ?? 0) },
+                        assignments: assignments.count,
+                        datedAssignments: assignments.filter { $0.due != nil }.count,
                         assignmentErrors: resultData.courses.filter { Self.failed($0.assignmentSource) }.count,
                         videoErrors: resultData.courses.filter { Self.failed($0.videoSource) }.count,
                         deadline: resultData.deadlineReport
                     )
-                    var summary = "일정 \(received)개, 기한 \(dated)개 확인"
+                    var summary = "과제 \(assignments.count)개, 전체 일정 \(received)개, 기한 \(dated)개 확인"
                     if unconfirmed > 0 { summary += ", 기한 미확인 \(unconfirmed)개" }
                     if partial > 0 { summary += "\n일부 자료를 읽지 못한 과목 \(partial)개" }
                     message = summary
@@ -325,7 +330,7 @@ struct CalixCanvas: View {
 }
 
 struct CanvasSnapshot: Decodable {
-    static let deadlineRevision = 3
+    static let deadlineRevision = 4
     static func script() throws -> String {
         let files = ["CanvasModules", "CanvasSync"]
         return try files.map { file in

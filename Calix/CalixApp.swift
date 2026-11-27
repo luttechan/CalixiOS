@@ -133,19 +133,32 @@ enum CalixScreenshot {
             style: {}, remove() {}, setAttribute() {},
             contentDocument: {URL: origin + "/learningx/lti/modulebuilder", querySelector: () => root, querySelectorAll: () => []},
         };
-        const document = {cookie: "", createElement: () => frame, documentElement: {appendChild() {}}};
+        const document = {cookie: "", createElement: tag => tag === "template" ? globalThis.document.createElement(tag) : frame,
+            documentElement: {appendChild() {}}};
         window[Symbol.for("calix.canvas.modules")] = {collect: async () => ({
             items: [], complete: false, learningx: {present: true, url: origin + "/courses/42/external_tools/9"},
         })};
         const fixtures = {
             "/api/v1/users/self/profile": {id: 13},
             "/api/v1/courses": [{id:42,name:"Course"}],
+            "/api/v1/courses/42/modules": [{id:1,items_count:2,items:[
+                {type:"Assignment",content_id:6,title:"Module assignment"},
+                {type:"Assignment",content_id:7,title:"HTML assignment"},
+            ]}],
+            "/api/v1/courses/42/assignments/6": {id:6,course_id:42,name:"Individual assignment",due_at:"2026-12-02T14:59:00Z"},
             "/api/v1/planner/items": [{course_id:42,plannable_id:4,plannable_type:"assignment",
                 plannable:{id:4,title:"Assignment",due_at:"2026-11-30T14:59:00Z"}}],
             "/api/v1/calendar_events": [{context_code:"course_42", start_at:"2026-12-01T14:59:00Z",
                 assignment:{id:5,course_id:42,name:"Calendar assignment"}}],
         };
         const fetch = async url => {
+            if (url.pathname === "/courses/42/assignments") return {ok:true,headers:new Headers(),text:async () =>
+                '<a href="/courses/42/assignments/8">Index link</a><a href="/courses/999/assignments/9">Other course</a>'};
+            if (url.pathname === "/courses/42/assignments/7" || url.pathname === "/courses/42/assignments/8") {
+                return {ok:true,headers:new Headers(),text:async () => '<div class="assignment-title"><h1>Assignment page</h1></div>' +
+                    '<div><span class="timestamp">1791989999</span><span class="due_date_string">10/14/2026</span>' +
+                    '<span class="due_time_string">11:59pm</span></div>'};
+            }
             if (url.pathname.startsWith("/learningx/") || /assignment(?:_groups|s)$/.test(url.pathname))
                 return {status:403,ok:false};
             return {ok:true,headers:new Headers(),text:async () => JSON.stringify(fixtures[url.pathname] ?? [])};
@@ -165,9 +178,15 @@ enum CalixScreenshot {
         let assignment = data.events.first { $0.id == "canvas:42:assignment:4" }
         let calendar = data.events.first { $0.id == "canvas:42:assignment:5" }
         let video = data.events.first { $0.id == "canvas:42:video:71" }
+        let individual = data.events.first { $0.id == "canvas:42:assignment:6" }
+        let html = data.events.first { $0.id == "canvas:42:assignment:7" }
+        let index = data.events.first { $0.id == "canvas:42:assignment:8" }
         return assignment?.due != nil && assignment?.due == AuroraCodec.date("2026-11-30T14:59:00Z") &&
             calendar?.due != nil && calendar?.due == AuroraCodec.date("2026-12-01T14:59:00Z") &&
             calendar?.done == true && calendar?.syncStatus == "graded" &&
+            individual?.due == AuroraCodec.date("2026-12-02T14:59:00Z") &&
+            html?.due == Date(timeIntervalSince1970: 1_791_989_999) &&
+            index?.due == html?.due && data.events.count == 6 &&
             video?.due != nil && video?.due == AuroraCodec.date("2026-11-29T14:59:00Z")
     }
 
