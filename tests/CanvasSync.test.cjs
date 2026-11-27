@@ -12,6 +12,7 @@ const fixtures = new Map([
     ["/api/v1/users/self/profile", { id: 13 }],
     ["/api/v1/courses", [{ id: 42, name: "Algorithms" }]],
     ["/api/v1/planner/items", []],
+    ["/api/v1/calendar_events", []],
     ["/api/v1/courses/42/assignments", [{
         id: 4, name: "Project", due_at: "2026-11-20T23:59:00+09:00", html_url: "https://outside.invalid/",
         submission: { workflow_state: "graded", submission_comments: [{ comment: "Good" }] },
@@ -231,4 +232,48 @@ test("starts LearningX with the verified course tool and retries the video API",
     assert.equal(calls, 2);
     assert.equal(removed, true);
     assert.equal(course.videos[0].due, "2026-11-30T14:59:00.000Z");
+});
+
+test("retains an assignment from the first page and recovers missing assignments through the calendar", async () => {
+    const assignments = "/api/v1/courses/42/assignments";
+    const calendar = "/api/v1/calendar_events";
+    const calendarRows = [
+        { context_code: "course_42", start_at: "2026-11-29T14:59:00Z", assignment: {id: 9, name: "Recovered"} },
+        { context_code: "course_43", start_at: "2026-11-29T14:59:00Z", assignment: {id: 8, name: "Other course"} },
+    ];
+    const fetch = transport({overrides: {[calendar]: calendarRows}});
+    const result = await run("13", false, async (url, settings) => {
+        if (url.pathname === "/api/v1/courses/42/assignment_groups" || url.searchParams.get("page") === "2")
+            return {status:403, ok:false};
+        if (url.pathname === assignments) {
+            const first = await fetch(url, settings);
+            first.headers.set("Link", `<${origin}${assignments}?page=2>; rel="next"`);
+            return first;
+        }
+        if (url.pathname === calendar) {
+            assert.equal(url.searchParams.get("type"), "assignment");
+            assert.deepEqual(url.searchParams.getAll("context_codes[]"), ["course_42"]);
+        }
+        return fetch(url, settings);
+    });
+    assert.deepEqual(result.courses[0].assignments.map(row => row.id), ["canvas:42:assignment:4", "canvas:42:assignment:9"]);
+    assert.equal(result.courses[0].assignmentSource, "partial");
+    assert.equal(result.deadlineReport.calendarUsed, 1);
+});
+
+test("retrieves a missing assignment by its signed-in student's submission ID", async () => {
+    const detail = "/api/v1/courses/42/assignments/4";
+    const calls = [];
+    const result = await run("13", false, (url, settings) => {
+        calls.push(url.pathname);
+        if (url.pathname.startsWith("/api/v1/") && (url.pathname.endsWith("/assignments") ||
+            url.pathname.endsWith("/assignment_groups") || url.pathname === "/api/v1/planner/items")) return {status:403,ok:false};
+        if (url.pathname === detail) return { ok:true, headers:new Headers(),
+            text: async () => JSON.stringify({id:4,name:"Recovered from submission ID",due_at:"2026-11-30T14:59:00Z"}) };
+        return transport()(url, settings);
+    });
+    assert.equal(result.courses[0].assignments[0].id, "canvas:42:assignment:4");
+    assert.equal(result.courses[0].assignments[0].due, "2026-11-30T14:59:00.000Z");
+    assert.equal(result.deadlineReport.planner, "auth");
+    assert.ok(calls.includes(detail));
 });

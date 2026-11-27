@@ -59,6 +59,14 @@ struct CalixCanvas: View {
     @State private var syncTask: Task<Void, Never>?
     @State private var attemptedAutomaticSync = false
     @State private var message = "학교 계정으로 로그인한 뒤 동기화를 누르세요."
+    @State private var report: SyncReport?
+
+    private struct SyncReport {
+        let assignments: Int
+        let assignmentErrors: Int
+        let videoErrors: Int
+        let deadline: CanvasSnapshot.DeadlineReport?
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,6 +74,26 @@ struct CalixCanvas: View {
                 Text(message).font(.subheadline)
                 if let time = library.data.lastSync {
                     Text("최근 동기화 \(time.formatted(.dateTime.month().day().hour().minute()))").font(.caption).foregroundStyle(.secondary)
+                }
+                if let report {
+                    DisclosureGroup("조회 결과") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("과제 \(report.assignments)개")
+                            Text("과제 목록 응답 오류 \(report.assignmentErrors)과목")
+                            Text("영상 응답 오류 \(report.videoErrors)과목")
+                            if let deadline = report.deadline {
+                                LabeledContent {
+                                    Text(Self.status(deadline.planner)) + Text(verbatim: ", ") + Text("반영 \(deadline.plannerUsed)개")
+                                } label: { Text("Canvas 플래너") }
+                                LabeledContent {
+                                    Text(Self.status(deadline.calendar)) + Text(verbatim: ", ") + Text("반영 \(deadline.calendarUsed)개")
+                                } label: { Text("Canvas 달력") }
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
                 }
                 if syncTask != nil {
                     HStack {
@@ -118,6 +146,7 @@ struct CalixCanvas: View {
             return
         }
         syncTask = Task {
+            report = nil
             defer { syncTask = nil }
             do {
                 let script = try CanvasSnapshot.script()
@@ -145,6 +174,12 @@ struct CalixCanvas: View {
                 let unconfirmed = incoming.filter { $0.due == nil && $0.dueKnown != true }.count
                 let received = incoming.count
                 if library.update({ resultData.merge(into: &$0) }) {
+                    report = SyncReport(
+                        assignments: resultData.courses.reduce(0) { $0 + ($1.assignments?.count ?? 0) },
+                        assignmentErrors: resultData.courses.filter { Self.failed($0.assignmentSource) }.count,
+                        videoErrors: resultData.courses.filter { Self.failed($0.videoSource) }.count,
+                        deadline: resultData.deadlineReport
+                    )
                     var summary = "일정 \(received)개, 기한 \(dated)개 확인"
                     if unconfirmed > 0 { summary += ", 기한 미확인 \(unconfirmed)개" }
                     if partial > 0 { summary += "\n일부 자료를 읽지 못한 과목 \(partial)개" }
@@ -155,6 +190,23 @@ struct CalixCanvas: View {
                 else if String(describing: error).contains("ACCOUNT_CHANGED") { message = "현재 계정과 다릅니다. 설정에서 먼저 로그아웃하세요." }
                 else { message = "학교 데이터를 읽지 못했습니다. 로그인과 네트워크 연결을 확인하고 다시 시도하세요." }
             }
+        }
+    }
+
+    private static func failed(_ code: String?) -> Bool {
+        ["auth", "timeout", "network", "response", "partial"].contains(code ?? "")
+    }
+
+    private static func status(_ code: String) -> LocalizedStringKey {
+        switch code {
+        case "ok": "조회 완료"
+        case "partial": "일부 조회"
+        case "empty": "자료 없음"
+        case "auth": "접근 권한 오류"
+        case "timeout": "응답 시간 초과"
+        case "network": "연결 오류"
+        case "skipped": "조회 생략"
+        default: "응답 오류"
         }
     }
 }
@@ -189,6 +241,8 @@ struct CanvasSnapshot: Decodable {
         let modulesVerified: Bool?
         let modulesValidator: String?
         let modulesPartial: Bool?
+        let assignmentSource: String?
+        let videoSource: String?
     }
 
     struct Row: Decodable {
@@ -216,6 +270,13 @@ struct CanvasSnapshot: Decodable {
 
     let owner: String
     let courses: [Course]
+    struct DeadlineReport: Decodable {
+        let planner: String
+        let plannerUsed: Int
+        let calendar: String
+        let calendarUsed: Int
+    }
+    let deadlineReport: DeadlineReport?
 
     @MainActor func merge(into data: inout CalixData) {
         if let previous = data.auroraSchoolOwner, previous != owner {

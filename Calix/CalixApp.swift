@@ -69,7 +69,11 @@ enum CalixScreenshot {
             let aurora = try verifyAurora()
             let profile = try verifyProfile()
             let deadlines = try await verifyCanvasDeadlineTransport()
-            report = valid && aurora && profile && deadlines ? "PASS" : "Canvas, Aurora, or profile verification failed"
+            let now = Date(timeIntervalSince1970: 0)
+            let countdown = DeadlineCountdown(due: now, now: now) == .overdue &&
+                DeadlineCountdown(due: now.addingTimeInterval(59), now: now) == .underMinute &&
+                DeadlineCountdown(due: now.addingTimeInterval(5_459), now: now) == .remaining(minutes: 90)
+            report = valid && aurora && profile && deadlines && countdown ? "PASS" : "Canvas, Aurora, profile, or countdown verification failed"
         } catch {
             report = String(describing: error)
         }
@@ -107,12 +111,14 @@ enum CalixScreenshot {
         const fixtures = {
             "/api/v1/users/self/profile": {id: 13},
             "/api/v1/courses": [{id:42,name:"Course"}],
-            "/api/v1/courses/42/assignments": [{id:4,name:"Assignment",due_at:null}],
             "/api/v1/planner/items": [{course_id:42,plannable_id:4,plannable_type:"assignment",
                 plannable:{id:4,title:"Assignment",due_at:"2026-11-30T14:59:00Z"}}],
+            "/api/v1/calendar_events": [{context_code:"course_42", start_at:"2026-12-01T14:59:00Z",
+                assignment:{id:5,course_id:42,name:"Calendar assignment"}}],
         };
         const fetch = async url => {
-            if (url.pathname.startsWith("/learningx/")) return {status:403,ok:false};
+            if (url.pathname.startsWith("/learningx/") || /assignment(?:_groups|s)$/.test(url.pathname))
+                return {status:403,ok:false};
             return {ok:true,headers:new Headers(),text:async () => JSON.stringify(fixtures[url.pathname] ?? [])};
         };
         """
@@ -126,8 +132,10 @@ enum CalixScreenshot {
         var data = CalixData()
         try CanvasSnapshot.decode(json).merge(into: &data)
         let assignment = data.events.first { $0.id == "canvas:42:assignment:4" }
+        let calendar = data.events.first { $0.id == "canvas:42:assignment:5" }
         let video = data.events.first { $0.id == "canvas:42:video:71" }
         return assignment?.due != nil && assignment?.due == AuroraCodec.date("2026-11-30T14:59:00Z") &&
+            calendar?.due != nil && calendar?.due == AuroraCodec.date("2026-12-01T14:59:00Z") &&
             video?.due != nil && video?.due == AuroraCodec.date("2026-11-29T14:59:00Z")
     }
 

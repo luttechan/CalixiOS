@@ -21,6 +21,10 @@
 "기한 경과" = "Overdue";
 "기한 없음" = "No deadline";
 "기한 미확인" = "Deadline unconfirmed";
+"남은 시간" = "Time remaining";
+"%@ 남음" = "%@ left";
+"1분 미만 남음" = "Less than a minute left";
+"1분 미만" = "Less than a minute";
 "긴급 마감" = "Urgent deadline";
 "긴급 알림 시점" = "Urgent reminder timing";
 "날짜" = "Date";

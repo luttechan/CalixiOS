@@ -236,11 +236,11 @@ struct CalixHome: View {
                     if today.isEmpty && overdue.isEmpty {
                         Text("오늘 확인할 일정이 없습니다.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    ForEach((overdue + today).prefix(5)) { EventLink(id: $0.id, library: library, card: true) }
+                    ForEach((overdue + today).prefix(5)) { EventLink(id: $0.id, library: library, card: true, now: now) }
                 }
                 if !upcoming.isEmpty {
                     VesperSection(title: "다가오는 일정") {
-                        ForEach(upcoming.prefix(5)) { EventLink(id: $0.id, library: library, card: true) }
+                        ForEach(upcoming.prefix(5)) { EventLink(id: $0.id, library: library, card: true, now: now) }
                     }
                 }
                 NavigationLink {
@@ -424,7 +424,7 @@ struct CalixEvents: View {
                     }
                     if !items.isEmpty {
                         VesperSection(title: LocalizedStringKey(group.rawValue)) {
-                            ForEach(items) { EventLink(id: $0.id, library: library, card: true) }
+                            ForEach(items) { EventLink(id: $0.id, library: library, card: true, now: context.date) }
                         }
                     }
                 }
@@ -453,6 +453,7 @@ struct EventLink: View {
     let id: String
     let library: CalixLibrary
     var card = false
+    var now: Date? = nil
 
     var body: some View {
         if let event = library.data.events.first(where: { $0.id == id }) {
@@ -473,6 +474,11 @@ struct EventLink: View {
                         } ?? Text(event.deadlineUnconfirmed ? LocalizedStringKey("기한 미확인") : LocalizedStringKey("기한 없음"))
                         let completion = event.done ? Text(verbatim: ", ") + Text("완료") : Text(verbatim: "")
                         (course + due + completion).font(.caption).foregroundStyle(.secondary)
+                        if let deadline = event.due, !event.done {
+                            EventDeadlineClock(deadline: deadline, now: now)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(library.data.preferences.theme.accent)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     if card { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }
                 }
@@ -486,6 +492,32 @@ struct EventLink: View {
                 }
             }
             .buttonStyle(.plain)
+        }
+    }
+}
+
+private struct EventDeadlineClock: View {
+    @Environment(\.locale) private var locale
+    let deadline: Date
+    var now: Date? = nil
+    var appendRemaining = true
+
+    var body: some View {
+        if let now { label(at: now) }
+        else {
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                label(at: context.date)
+            }
+        }
+    }
+
+    private func label(at date: Date) -> Text {
+        switch DeadlineCountdown(due: deadline, now: date) {
+        case .overdue: return Text("기한 경과")
+        case .underMinute: return appendRemaining ? Text("1분 미만 남음") : Text("1분 미만")
+        case .remaining(let minutes):
+            let duration = DeadlineCountdown.duration(minutes: minutes, locale: locale)
+            return appendRemaining ? Text("\(duration) 남음") : Text(verbatim: duration)
         }
     }
 }
@@ -507,6 +539,11 @@ private struct EventDetails: View {
                     LabeledContent("마감") {
                         if let due = event.due { Text(due.formatted(.dateTime.month().day().hour().minute().locale(locale))) }
                         else { Text(event.deadlineUnconfirmed ? LocalizedStringKey("기한 미확인") : LocalizedStringKey("기한 없음")) }
+                    }
+                    if let deadline = event.due, !event.done {
+                        LabeledContent("남은 시간") {
+                            EventDeadlineClock(deadline: deadline, appendRemaining: false)
+                        }
                     }
                     if let status = event.syncStatus {
                         let labels = ["missing": "미제출", "graded": "채점 완료", "late": "지각", "submitted": "제출 완료",
