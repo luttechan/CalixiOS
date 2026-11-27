@@ -111,7 +111,11 @@ struct AuroraLinkState: Codable {
 }
 
 struct AuroraSnapshot: Decodable {
-    struct Row: Decodable { let revision: String; let value: AuroraRecord }
+    struct Row: Decodable {
+        let revision: String
+        let value: AuroraRecord
+        let courseID: Int?
+    }
     struct School: Decodable {
         let id, title, course, kind, note: String
         let due, url, status, feedback: String?
@@ -126,6 +130,7 @@ struct AuroraSnapshot: Decodable {
     let school: [School]
     let attendance: [Attendance]
     let owner, mainTerm: String
+    let timetableColors: AuroraTimetableColors?
 }
 
 struct AuroraOffer: Encodable {
@@ -269,6 +274,7 @@ enum AuroraWorkspace {
     static func apply(_ snapshot: AuroraSnapshot, baseline: Entries, data: inout CalixData, link: inout AuroraLinkState) {
         let before = collect(data, link)
         mergeSchool(snapshot, data: &data)
+        if let colors = snapshot.timetableColors { data.auroraTimetableColors = colors }
         let matchingSchool = !snapshot.owner.isEmpty && (data.canvasID ?? data.auroraSchoolOwner) == snapshot.owner
         var conflicts = Set(snapshot.conflicts)
         for kind in kinds {
@@ -284,7 +290,7 @@ enum AuroraWorkspace {
                 guard original == actual else { conflicts.insert(key); continue }
                 let native = localID(kind, id, link)
                 if let row = rows[id] {
-                    write(kind, native, row.value, data: &data)
+                    write(kind, native, row.value, courseID: row.courseID, data: &data)
                     link.native[kind, default: [:]][native] = id
                 } else {
                     remove(kind, native, data: &data)
@@ -323,7 +329,7 @@ enum AuroraWorkspace {
         return uuid(wire).uuidString
     }
 
-    private static func write(_ kind: String, _ native: String, _ row: AuroraRecord, data: inout CalixData) {
+    private static func write(_ kind: String, _ native: String, _ row: AuroraRecord, courseID: Int?, data: inout CalixData) {
         let title = row.string("title")
         let id = UUID(uuidString: native)
         switch kind {
@@ -349,9 +355,11 @@ enum AuroraWorkspace {
                 auroraStatusColor: row.string("statusColor")))
         case "lesson":
             guard let id else { return }
+            let previous = data.lessons.first { $0.id == id }
             put(&data.lessons, CalixLesson(id: id, title: title, term: row.string("term"), weekday: row.int("weekday", 2),
                 start: row.int("start", 540), end: row.int("end", 600), room: row.string("room"),
-                lecturer: row.string("lecturer"), online: row.bool("online"), auroraColor: row.string("color")))
+                lecturer: row.string("lecturer"), online: row.bool("online"), auroraColor: row.string("color"),
+                auroraCourseID: courseID ?? previous?.auroraCourseID))
         case "grade":
             guard let id else { return }
             put(&data.grades, CalixGrade(id: id, title: title, term: row.string("term"), credits: row.double("credits"),
@@ -408,7 +416,7 @@ enum AuroraWorkspace {
             let url = row.url.flatMap(URL.init(string:)).flatMap { CanvasBrowser.isCampus($0) ? $0 : nil }
             put(&data.events, CalixEvent(id: row.id, title: previous?.customTitle ?? row.title,
                 course: row.course, kind: row.kind == "movie" ? .video : .assignment,
-                due: AuroraCodec.date(row.due ?? ""), note: previous?.note ?? row.note,
+                due: AuroraCodec.date(row.due ?? "") ?? previous?.due, note: previous?.note ?? row.note,
                 done: previous?.manualCompletion ?? row.done, starred: previous?.starred ?? false,
                 remote: true, manualCompletion: previous?.manualCompletion, url: url, feedback: row.feedback ?? previous?.feedback,
                 customTitle: previous?.customTitle, syncStatus: row.status))

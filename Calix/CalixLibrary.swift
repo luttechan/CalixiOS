@@ -87,6 +87,7 @@ struct CalixLesson: Codable, Identifiable {
     var lecturer = ""
     var online = false
     var auroraColor: String?
+    var auroraCourseID: Int?
 }
 
 struct CalixGrade: Codable, Identifiable {
@@ -189,6 +190,7 @@ struct CalixPreferences: Codable {
     var urgentReminders: Bool? = true
     var standardReminders: Bool? = true
     var standardDays: Int? = 1
+    var timetableAppearance: [String: TimetableAppearance]?
 }
 
 struct CalixData: Codable {
@@ -209,11 +211,13 @@ struct CalixData: Codable {
     var avatar: Data?
     var canvasID: String?
     var moduleValidators: [String: String]?
+    var canvasDeadlineRevision: Int?
     var canvasCourses: [String: CanvasCourse]?
     var lastSync: Date?
     var auroraLink: AuroraLinkState?
     var auroraSchoolOwner: String?
     var auroraSchoolEvents: [String]?
+    var auroraTimetableColors: AuroraTimetableColors?
 
     static func dayKey(_ date: Date) -> String {
         let values = Calendar.current.dateComponents([.year, .month, .day], from: date)

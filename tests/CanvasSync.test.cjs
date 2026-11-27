@@ -28,7 +28,7 @@ const fixtures = new Map([
     [root + "/attendance_items/summary", { attendance_summaries: { 8: { attendance_status: "attendance" } } }],
 ]);
 
-function transport({ fail, carryNext = false, deep = false, unchanged = false } = {}) {
+function transport({ fail, carryNext = false, deep = false, unchanged = false, overrides = {} } = {}) {
     return async (url, settings) => {
         assert.equal(url.origin, origin);
         assert.equal(settings.credentials, "same-origin");
@@ -37,7 +37,7 @@ function transport({ fail, carryNext = false, deep = false, unchanged = false } 
         if (fail === url.pathname) throw Error("offline");
         assert.ok(fixtures.has(url.pathname), `unexpected path ${url.pathname}`);
         const page = url.searchParams.get("page");
-        let payload = page === "2" ? [] : fixtures.get(url.pathname);
+        let payload = page === "2" ? [] : (overrides[url.pathname] ?? fixtures.get(url.pathname));
         const headers = new Headers();
         if (url.pathname === root + "/modules") {
             headers.set("ETag", '"modules-version-1"');
@@ -111,4 +111,18 @@ test("keeps available native Canvas modules when LearningX fails", async () => {
     assert.equal(course.modulesPartial, true);
     assert.equal(course.videos[0].id, "canvas:42:video:91");
     assert.equal(course.videos[0].status, "unverified");
+});
+
+test("reads the student's submission deadline and nested LearningX periods", async () => {
+    const overrides = {
+        "/api/v1/courses/42/assignments": [{ id: 4, name: "Project", due_at: null }],
+        "/api/v1/courses/42/students/submissions": [{ assignment_id: 4, user_id: 13, cached_due_date: "2026-11-20T22:30:00+09:00" }],
+        [root + "/modules"]: { modules: [{ items: [{ title: "Lecture", module_item_id: 8, due_at: "invalid",
+            content_data: { item_content_data: { content_type: "movie", lecture_periods: [
+                { due_at: "2026-11-22 21:15:00" }, { due_at: "2026-11-23 23:59:00" },
+            ] } } }] }] },
+    };
+    const [course] = (await run("13", false, transport({ overrides }))).courses;
+    assert.equal(course.assignments[0].due, "2026-11-20T13:30:00.000Z");
+    assert.equal(course.videos[0].due, "2026-11-23T14:59:00.000Z");
 });

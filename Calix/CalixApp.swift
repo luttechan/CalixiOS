@@ -49,8 +49,10 @@ enum CalixScreenshot {
             let snapshot = try JSONDecoder().decode(CanvasSnapshot.self, from: Data(fixture.utf8))
             var data = CalixData()
             data.preferences.mainTerm = "검증 학기"
+            let originalDue = AuroraCodec.date("2026-11-29T21:30:00+09:00")
             data.events = [
-                CalixEvent(id: "canvas:42:assignment:4", title: "Edited", note: "Keep", remote: true, manualCompletion: false, customTitle: "Edited"),
+                CalixEvent(id: "canvas:42:assignment:4", title: "Edited", due: originalDue,
+                           note: "Keep", remote: true, manualCompletion: false, customTitle: "Edited"),
                 CalixEvent(id: "canvas:42:video:8", title: "Cached", kind: .video, remote: true),
             ]
             snapshot.merge(into: &data)
@@ -58,7 +60,7 @@ enum CalixScreenshot {
             data.preferences.theme = .vesper
             let roundTrip = try JSONDecoder().decode(CalixData.self, from: JSONEncoder().encode(data))
             let valid = data.events.count == 2 && assignment?.title == "Edited" && assignment?.note == "Keep" &&
-                assignment?.done == false && assignment?.syncStatus == "graded" &&
+                originalDue != nil && assignment?.due == originalDue && assignment?.done == false && assignment?.syncStatus == "graded" &&
                 data.canvasCourses?["42"]?.term == "검증 학기" && data.moduleValidators?["42"] == "example" &&
                 roundTrip.preferences.theme == .vesper
             let aurora = try verifyAurora()
@@ -79,11 +81,13 @@ enum CalixScreenshot {
         data.journals = [CalixJournal(title: "Protected", secret: true)]
         var link = AuroraLinkState(workspace: pair.workspace)
         let smoke = """
-        {"records":{"event":{"manual:sample":{"revision":"111","value":{"title":"Aurora","start":"2026-11-27T00:00:00+09:00","due":"2026-11-29T21:30:00+09:00","done":false,"starred":true}}}},"conflicts":[],"school":[],"attendance":[],"owner":"","mainTerm":"2026학년도 2학기"}
+        {"records":{"event":{"manual:sample":{"revision":"111","value":{"title":"Aurora","start":"2026-11-27T00:00:00+09:00","due":"2026-11-29T21:30:00+09:00","done":false,"starred":true}}}},"conflicts":[],"school":[],"attendance":[],"owner":"","mainTerm":"2026학년도 2학기","timetableColors":{"base":{"theme":1,"mode":"auto","colors":{},"slots":[]},"terms":{},"presets":{}}}
         """
         let snapshot = try JSONDecoder().decode(AuroraSnapshot.self, from: Data(smoke.utf8))
         AuroraWorkspace.apply(snapshot, baseline: [:], data: &data, link: &link)
         guard data.events.first?.starts != nil, data.events.first?.starred == true,
+              data.auroraTimetableColors?.base.theme == 1, data.auroraTimetableColors?.base.palette.dark == false,
+              TimetablePalette.all.count == 16,
               AuroraWorkspace.offer(data, link, receipt: "none", name: "Fixture").changes.isEmpty else { return false }
         data.events[0].title = "Edited on Vesper"
         let offer = AuroraWorkspace.offer(data, link, receipt: "none", name: "Fixture")

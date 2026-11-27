@@ -128,7 +128,8 @@ struct CalixCanvas: View {
                 let includeAttendance = library.data.preferences.syncAttendance ?? library.data.preferences.showAttendance
                 let arguments: [String: Any] = [
                     "expectedOwner": library.data.canvasID ?? "",
-                    "knownModules": library.data.canvasID == nil ? [:] : (library.data.moduleValidators ?? [:]),
+                    "knownModules": library.data.canvasID == nil || library.data.canvasDeadlineRevision != 1
+                        ? [:] : (library.data.moduleValidators ?? [:]),
                     "includeAttendance": includeAttendance
                 ]
                 let result = try await browser.view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page)
@@ -137,9 +138,7 @@ struct CalixCanvas: View {
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .custom { decoder in
                     let value = try decoder.singleValueContainer().decode(String.self)
-                    let parser = ISO8601DateFormatter()
-                    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    guard let date = parser.date(from: value) else { throw CocoaError(.fileReadCorruptFile) }
+                    guard let date = AuroraCodec.date(value) else { throw CocoaError(.fileReadCorruptFile) }
                     return date
                 }
                 let resultData = try decoder.decode(CanvasSnapshot.self, from: Data(value.utf8))
@@ -183,13 +182,15 @@ struct CanvasSnapshot: Decodable {
         let course: String
         let kind: EventKind
         let due: Date?
+        let dueKnown: Bool?
         let done: Bool
         let url: URL?
         let feedback: String?
         let status: String?
 
         func event(previous: CalixEvent?) -> CalixEvent {
-            CalixEvent(id: id, title: previous?.customTitle ?? title, course: course, kind: kind, due: due, note: previous?.note ?? "",
+            CalixEvent(id: id, title: previous?.customTitle ?? title, course: course, kind: kind,
+                       due: dueKnown == true ? due : (due ?? previous?.due), note: previous?.note ?? "",
                        done: previous?.manualCompletion ?? (status == "unverified" ? (previous?.done ?? done) : done),
                        starred: previous?.starred ?? false, remote: true,
                        manualCompletion: previous?.manualCompletion, url: url.flatMap { CanvasBrowser.isCampus($0) ? $0 : nil },
@@ -210,7 +211,7 @@ struct CanvasSnapshot: Decodable {
         }
         var events = Dictionary(data.events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var attendance = Dictionary(data.attendance.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var validators = data.moduleValidators ?? [:]
+        var validators = data.canvasDeadlineRevision == 1 ? (data.moduleValidators ?? [:]) : [:]
         var registered = data.canvasCourses ?? [:]
         for course in courses {
             registered[course.id] = CanvasCourse(id: course.id, name: course.name, term: registered[course.id]?.term ?? data.preferences.mainTerm)
@@ -225,6 +226,7 @@ struct CanvasSnapshot: Decodable {
         data.attendance = attendance.values.sorted { $0.id < $1.id }
         let active = Set(courses.map(\.id))
         data.moduleValidators = validators.filter { active.contains($0.key) }
+        data.canvasDeadlineRevision = 1
         data.canvasCourses = registered
         data.canvasID = owner
         if courses.isEmpty || courses.contains(where: { $0.assignments != nil || $0.modulesVerified == true || $0.attendance != nil }) {

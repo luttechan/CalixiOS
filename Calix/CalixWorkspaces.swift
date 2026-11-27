@@ -191,6 +191,91 @@ private struct CalixStatusEditor: View {
     }
 }
 
+struct TimetableAppearance: Codable, Equatable {
+    enum Mode: String, Codable { case auto, manual, custom }
+    var theme: Int
+    var mode: Mode = .auto
+    var colors: [String: String] = [:]
+    var slots: [String] = []
+
+    var palette: TimetablePalette { TimetablePalette.all.indices.contains(theme) ? TimetablePalette.all[theme] : TimetablePalette.all[0] }
+
+    func color(_ lesson: CalixLesson, slot: Int) -> Color {
+        let fallback = palette.swatch(slot)
+        switch mode {
+        case .auto: return fallback
+        case .manual: return TimetablePalette.hex(lesson.auroraColor) ?? fallback
+        case .custom:
+            let key = lesson.auroraCourseID.map { "course:" + String($0) } ?? "title:" + String(lesson.title.trimmed.prefix(200))
+            return TimetablePalette.hex(colors[key]) ??
+                (slots.indices.contains(slot) ? TimetablePalette.hex(slots[slot]) : nil) ?? fallback
+        }
+    }
+}
+
+struct AuroraTimetableColors: Codable {
+    let base: TimetableAppearance
+    let terms: [String: TimetableAppearance]
+    let presets: [String: TimetableAppearance]
+}
+
+struct TimetablePalette {
+    let name: String
+    let surface: String
+    let accent: String
+    let hues: [Double]
+    let dark: Bool
+
+    static let all = [
+        Self(name: "오로라", surface: "#171c2d", accent: "#b6a3f2", hues: [282, 195, 160, 330, 215, 32, 256, 130], dark: true),
+        Self(name: "새벽", surface: "#fff3ef", accent: "#a45573", hues: [348, 28, 274, 18, 315, 44, 220, 162], dark: false),
+        Self(name: "조수", surface: "#edf8fb", accent: "#207b92", hues: [195, 221, 165, 242, 139, 274, 31, 321], dark: false),
+        Self(name: "자정", surface: "#151b2c", accent: "#9aa7ff", hues: [234, 196, 276, 319, 166, 28, 355, 86], dark: true),
+        Self(name: "장미", surface: "#fff1f5", accent: "#ad4871", hues: [340, 20, 291, 357, 310, 35, 200, 157], dark: false),
+        Self(name: "라벤더", surface: "#f6f1fd", accent: "#7855aa", hues: [273, 320, 228, 145, 299, 30, 191, 357], dark: false),
+        Self(name: "민트", surface: "#edf9f3", accent: "#287856", hues: [151, 183, 112, 219, 82, 270, 33, 320], dark: false),
+        Self(name: "숲", surface: "#1b2921", accent: "#a7cb84", hues: [91, 151, 45, 183, 119, 25, 209, 320], dark: true),
+        Self(name: "모래", surface: "#faf4e8", accent: "#98662f", hues: [33, 54, 17, 143, 75, 200, 341, 268], dark: false),
+        Self(name: "호박색", surface: "#fff5dd", accent: "#96600b", hues: [40, 23, 64, 352, 92, 186, 285, 140], dark: false),
+        Self(name: "테라코타", surface: "#faede6", accent: "#a45137", hues: [17, 354, 46, 125, 326, 187, 254, 74], dark: false),
+        Self(name: "오디", surface: "#2b1e30", accent: "#e1a4cf", hues: [315, 271, 354, 20, 227, 163, 191, 50], dark: true),
+        Self(name: "슬레이트", surface: "#eef2f6", accent: "#546980", hues: [215, 192, 260, 155, 316, 26, 345, 90], dark: false),
+        Self(name: "먹색", surface: "#202228", accent: "#b4bac7", hues: [217, 278, 166, 37, 331, 193, 113, 10], dark: true),
+        Self(name: "라임", surface: "#f6f8e6", accent: "#617521", hues: [78, 133, 51, 178, 107, 29, 223, 313], dark: false),
+        Self(name: "종이", surface: "#f7f5f0", accent: "#786d65", hues: [26, 210, 155, 289, 352, 78, 185, 239], dark: false),
+    ]
+
+    static func matching(_ theme: CalixTheme) -> Int {
+        switch theme {
+        case .aurora: return 0
+        case .glacier, .sky: return 2
+        case .vesper: return 3
+        case .pink: return 4
+        case .purple, .lavender: return 5
+        case .mint: return 6
+        case .amber: return 9
+        case .peach: return 10
+        case .dark: return 13
+        case .olive: return 14
+        }
+    }
+
+    static func hex(_ text: String?) -> Color? {
+        guard let text, text.count == 7, text.first == "#", let value = UInt32(text.dropFirst(), radix: 16) else { return nil }
+        return Color(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255,
+                     blue: Double(value & 255) / 255)
+    }
+
+    func swatch(_ index: Int) -> Color {
+        let hue = hues[index % hues.count]
+        func channel(_ offset: Double) -> Double {
+            let wave = (offset + hue / 30).truncatingRemainder(dividingBy: 12)
+            return (dark ? 0.68 : 0.43) - (dark ? 0.22 : 0.19) * max(-1, min(wave - 3, 9 - wave, 1))
+        }
+        return Color(red: channel(0), green: channel(8), blue: channel(4))
+    }
+}
+
 struct CalixTimetable: View {
     let library: CalixLibrary
     @Environment(\.scenePhase) private var phase
@@ -199,6 +284,7 @@ struct CalixTimetable: View {
     @State private var editing: CalixLesson?
     @State private var offDate = Date()
     @State private var showOffDay = false
+    @State private var showTheme = false
     @State private var authorized = false
     @State private var showFree = false
     private let days = ["일", "월", "화", "수", "목", "금", "토"]
@@ -216,6 +302,16 @@ struct CalixTimetable: View {
         let items = library.data.lessons.filter { $0.term == selected }
         let active = items.filter { $0.weekday == day && !$0.online }.sorted { $0.start < $1.start }
         let online = items.filter(\.online)
+        let imported = library.data.auroraTimetableColors
+        let override = library.data.preferences.timetableAppearance?[selected]
+        let appearance = override ?? imported?.terms[selected] ?? imported?.base ??
+            TimetableAppearance(theme: TimetablePalette.matching(library.data.preferences.theme))
+        let palette = appearance.palette
+        let courseSlots: [String: Int] = {
+            var slots: [String: Int] = [:]
+            for item in items where slots[courseKey(item)] == nil { slots[courseKey(item)] = slots.count % 8 }
+            return slots
+        }()
         Group {
             if library.data.preferences.lockTimetable && !authorized {
                 ProtectedView(library: library, title: "시간표", access: $authorized)
@@ -229,11 +325,11 @@ struct CalixTimetable: View {
                     }.pickerStyle(.segmented)
                     Section("\(days[day - 1])요일") {
                         if active.isEmpty { Text("등록된 수업이 없습니다.").foregroundStyle(.secondary) }
-                        ForEach(active) { row($0) }
+                        ForEach(active) { item in row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0)) }
                     }
                     Section("비대면") {
                         if online.isEmpty { Text("등록된 비대면 수업이 없습니다.").foregroundStyle(.secondary) }
-                        ForEach(online) { row($0) }
+                        ForEach(online) { item in row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0)) }
                     }
                     DisclosureGroup("공강 찾기", isExpanded: $showFree) {
                         let intervals = freeSlots(active)
@@ -245,13 +341,46 @@ struct CalixTimetable: View {
                         Button("기본 학기로 설정") { library.update { $0.preferences.mainTerm = selected } }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(TimetablePalette.hex(palette.surface) ?? Color(uiColor: .systemGroupedBackground))
+                .environment(\.colorScheme, palette.dark ? .dark : .light)
+                .tint(TimetablePalette.hex(palette.accent))
                 .toolbar {
+                    Button { showTheme = true } label: { Label("시간표 테마", systemImage: "paintpalette") }
                     Button { editing = CalixLesson(term: selected, weekday: day) } label: { Label("수업 추가", systemImage: "plus") }
                 }
             }
         }
         .navigationTitle("시간표")
-        .onChange(of: phase) { _, newPhase in if newPhase == .background { authorized = false; editing = nil; showOffDay = false } }
+        .onChange(of: phase) { _, newPhase in
+            if newPhase == .background { authorized = false; editing = nil; showOffDay = false; showTheme = false }
+        }
+        .sheet(isPresented: $showTheme) {
+            NavigationStack {
+                List {
+                    themeButton(imported == nil ? "화면 테마에 맞춤" : "Aurora 테마 사용",
+                                style: nil, current: override, term: selected)
+                    if let imported, !imported.presets.isEmpty {
+                        Section("Aurora 프리셋") {
+                            ForEach(imported.presets.keys.sorted(), id: \.self) { name in
+                                themeButton(LocalizedStringKey(name), style: imported.presets[name], current: override, term: selected)
+                            }
+                        }
+                    }
+                    ForEach([false, true], id: \.self) { dark in
+                        Section(dark ? LocalizedStringKey("어두운 테마") : LocalizedStringKey("밝은 테마")) {
+                            ForEach(TimetablePalette.all.indices.filter { TimetablePalette.all[$0].dark == dark }, id: \.self) { index in
+                                themeButton(LocalizedStringKey(TimetablePalette.all[index].name),
+                                            style: TimetableAppearance(theme: index), current: override, term: selected)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("시간표 테마")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { showTheme = false } } }
+            }
+        }
         .sheet(item: $editing) { lesson in
             EditForm(title: "수업 편집", initial: lesson, valid: { !$0.title.trimmed.isEmpty && !$0.term.trimmed.isEmpty && ($0.online || $0.start < $0.end) }) { item in
                 TextField("수업 이름", text: item.title)
@@ -291,12 +420,47 @@ struct CalixTimetable: View {
         }
     }
 
-    private func row(_ item: CalixLesson) -> some View {
+    private func courseKey(_ item: CalixLesson) -> String {
+        item.auroraCourseID.map { "course:" + String($0) } ?? "title:" + item.title.trimmed
+    }
+
+    private func themeButton(_ title: LocalizedStringKey, style: TimetableAppearance?,
+                             current: TimetableAppearance?, term: String) -> some View {
+        Button {
+            if library.update({ data in
+                var appearances = data.preferences.timetableAppearance ?? [:]
+                appearances[term] = style
+                data.preferences.timetableAppearance = appearances.isEmpty ? nil : appearances
+            }) { showTheme = false }
+        } label: {
+            HStack(spacing: 12) {
+                Text(title).foregroundStyle(.primary)
+                Spacer()
+                if let style {
+                    HStack(spacing: 4) {
+                        ForEach(0..<3) { index in
+                            Circle().fill(TimetablePalette.hex(style.slots.indices.contains(index) ? style.slots[index] : nil)
+                                          ?? style.palette.swatch(index)).frame(width: 13, height: 13)
+                        }
+                    }
+                    .accessibilityHidden(true)
+                }
+                if style == current { Image(systemName: "checkmark").fontWeight(.semibold) }
+            }
+        }
+        .accessibilityAddTraits(style == current ? .isSelected : [])
+    }
+
+    private func row(_ item: CalixLesson, color: Color) -> some View {
         Button { editing = item } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title).foregroundStyle(.primary)
-                if !item.online { Text("\(time(item.start))–\(time(item.end))").monospacedDigit() }
-                Text([item.room, item.lecturer].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(.secondary)
+            HStack(spacing: 11) {
+                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 3, height: 30).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title).foregroundStyle(.primary)
+                    if !item.online { Text("\(time(item.start))–\(time(item.end))").monospacedDigit().foregroundStyle(.secondary) }
+                    let details = [item.room, item.lecturer].filter { !$0.isEmpty }
+                    if !details.isEmpty { Text(details.joined(separator: ", ")).foregroundStyle(.secondary) }
+                }
             }
         }
         .swipeActions { Button("삭제", role: .destructive) { library.update { $0.lessons.removeAll { $0.id == item.id } } } }

@@ -43,7 +43,22 @@ const id = (value) => {
     return /^[1-9]\d{0,18}$/.test(text) && (typeof value !== "number" || Number.isSafeInteger(value)) ? text : null;
 };
 const clip = (value, size = 500) => typeof value === "string" ? value.slice(0, size) : "";
-const date = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+const date = (value) => {
+    if (typeof value !== "string") return null;
+    let text = value.trim().replace(/^(\d{4}-\d{2}-\d{2}) (?=\d)/, "$1T");
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(text)) text += "+09:00";
+    return Number.isFinite(Date.parse(text)) ? new Date(text).toISOString() : null;
+};
+const firstDate = (...values) => {
+    for (const value of values) {
+        const parsed = date(value);
+        if (parsed) return parsed;
+    }
+    return null;
+};
+const periodDue = (value) => Array.isArray(value)
+    ? value.map((period) => date(period?.due_at)).filter(Boolean).sort().at(-1)
+    : value?.due_at;
 const link = (value) => {
     try {
         if (!value) return null;
@@ -73,7 +88,8 @@ const readVideos = (course, courseID, body) => {
         if (itemID && data && movingImage && title) {
             const key = `canvas:${courseID}:video:${itemID}`;
             const status = String(row.attendance_status ?? data?.attendance_status ?? "").toLowerCase();
-            const due = date(row.due_at || data.due_at || media?.due_at || data?.lecture_periods?.due_at);
+            const due = firstDate(row.due_at, data.due_at, media?.due_at, periodDue(row.lecture_periods),
+                periodDue(data.lecture_periods), periodDue(media?.lecture_periods));
             const done = row.completed === true || ["attendance", "present", "excused", "late", "complete", "completed"].includes(status);
             const previous = events.get(key);
             events.set(key, { id: key, title, course, kind: "영상", due: due ?? previous?.due ?? null,
@@ -192,8 +208,10 @@ const gather = async (row) => {
         for (const criterion of Object.values(submission?.rubric_assessment || {})) {
             if (criterion?.comments) labels.push(clip(criterion.comments, 2000));
         }
+        const due = firstDate(item.due_at, submission?.cached_due_date, item.submission?.cached_due_date);
         return [{ id: `canvas:${courseID}:assignment:${assignmentID}`, title: clip(item.name), course: name, kind: "과제",
-            due: date(item.due_at), done: Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded",
+            due, dueKnown: due !== null || item.due_at === null,
+            done: Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded",
             url: link(item.html_url) || link(`${base.replace("/api/v1", "")}/assignments/${assignmentID}`),
             status: submission?.missing ? "missing" : workflow === "graded" ? "graded" : submission?.late ? "late" :
                 (workflow === "submitted" || submission?.submitted_at) ? "submitted" : null,
