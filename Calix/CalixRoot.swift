@@ -419,7 +419,9 @@ struct CalixEvents: View {
             }.ordered
             VesperPage {
                 ForEach(DeadlineGroup.allCases) { group in
-                    let items = visible.filter { DeadlineGroup.classify($0.due, now: context.date) == group }
+                    let items = visible.filter {
+                        DeadlineGroup.classify($0.due, now: context.date, unconfirmed: $0.deadlineUnconfirmed) == group
+                    }
                     if !items.isEmpty {
                         VesperSection(title: LocalizedStringKey(group.rawValue)) {
                             ForEach(items) { EventLink(id: $0.id, library: library, card: true) }
@@ -468,7 +470,7 @@ struct EventLink: View {
                         let course = Text(verbatim: event.course.isEmpty ? "" : event.course + ", ")
                         let due = event.due.map {
                             Text(verbatim: $0.formatted(.dateTime.month().day().hour().minute().locale(locale)))
-                        } ?? Text("기한 없음")
+                        } ?? Text(event.deadlineUnconfirmed ? LocalizedStringKey("기한 미확인") : LocalizedStringKey("기한 없음"))
                         let completion = event.done ? Text(verbatim: ", ") + Text("완료") : Text(verbatim: "")
                         (course + due + completion).font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -502,7 +504,10 @@ private struct EventDetails: View {
                 Section {
                     LabeledContent("과목", value: event.course.isEmpty ? "개인 일정" : event.course)
                     LabeledContent("유형", value: event.kind.rawValue)
-                    LabeledContent("마감", value: event.due?.formatted(.dateTime.month().day().hour().minute().locale(locale)) ?? "기한 없음")
+                    LabeledContent("마감") {
+                        if let due = event.due { Text(due.formatted(.dateTime.month().day().hour().minute().locale(locale))) }
+                        else { Text(event.deadlineUnconfirmed ? LocalizedStringKey("기한 미확인") : LocalizedStringKey("기한 없음")) }
+                    }
                     if let status = event.syncStatus {
                         let labels = ["missing": "미제출", "graded": "채점 완료", "late": "지각", "submitted": "제출 완료",
                                       "attendance": "출석", "present": "출석", "excused": "공결", "absent": "결석",

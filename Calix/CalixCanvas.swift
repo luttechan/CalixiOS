@@ -120,11 +120,7 @@ struct CalixCanvas: View {
         syncTask = Task {
             defer { syncTask = nil }
             do {
-                guard let path = Bundle.main.url(forResource: "CanvasSync", withExtension: "js") else { throw CocoaError(.fileReadNoSuchFile) }
-                guard let modules = Bundle.main.url(forResource: "CanvasModules", withExtension: "js") else {
-                    throw CocoaError(.fileReadNoSuchFile)
-                }
-                let script = try String(contentsOf: modules, encoding: .utf8) + "\n" + String(contentsOf: path, encoding: .utf8)
+                let script = try CanvasSnapshot.script()
                 let includeAttendance = library.data.preferences.syncAttendance ?? library.data.preferences.showAttendance
                 let arguments: [String: Any] = [
                     "expectedOwner": library.data.canvasID ?? "",
@@ -135,13 +131,7 @@ struct CalixCanvas: View {
                 let result = try await browser.view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page)
                 try Task.checkCancellation()
                 guard let value = result as? String, value.utf8.count < 20_000_000 else { throw CocoaError(.fileReadCorruptFile) }
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .custom { decoder in
-                    let value = try decoder.singleValueContainer().decode(String.self)
-                    guard let date = AuroraCodec.date(value) else { throw CocoaError(.fileReadCorruptFile) }
-                    return date
-                }
-                let resultData = try decoder.decode(CanvasSnapshot.self, from: Data(value.utf8))
+                let resultData = try CanvasSnapshot.decode(value)
                 guard library.data.canvasID == nil || library.data.canvasID == resultData.owner else {
                     message = "현재 계정과 다릅니다. 설정에서 먼저 로그아웃하세요."
                     return
@@ -150,9 +140,15 @@ struct CalixCanvas: View {
                     $0.assignments == nil || $0.modulesPartial == true || ($0.videos == nil && $0.modulesUnchanged != true) ||
                         (includeAttendance && $0.attendance == nil)
                 }.count
-                let received = resultData.courses.reduce(0) { $0 + ($1.assignments?.count ?? 0) + ($1.videos?.count ?? 0) }
+                let incoming = resultData.courses.flatMap { ($0.assignments ?? []) + ($0.videos ?? []) }
+                let dated = incoming.filter { $0.due != nil }.count
+                let unconfirmed = incoming.filter { $0.due == nil && $0.dueKnown != true }.count
+                let received = incoming.count
                 if library.update({ resultData.merge(into: &$0) }) {
-                    message = partial > 0 ? "일정 \(received)개를 읽었습니다. \(partial)개 과목의 일부 응답을 받지 못해 기존 기록을 유지했습니다." : "과목 \(resultData.courses.count)개 · 일정 \(received)개 동기화 완료"
+                    var summary = "일정 \(received)개, 기한 \(dated)개 확인"
+                    if unconfirmed > 0 { summary += ", 기한 미확인 \(unconfirmed)개" }
+                    if partial > 0 { summary += "\n일부 자료를 읽지 못한 과목 \(partial)개" }
+                    message = summary
                 }
             } catch {
                 if Task.isCancelled { message = "동기화를 중단했습니다." }
@@ -164,7 +160,25 @@ struct CalixCanvas: View {
 }
 
 struct CanvasSnapshot: Decodable {
-    static let deadlineRevision = 2
+    static let deadlineRevision = 3
+    static func script() throws -> String {
+        let files = ["CanvasModules", "CanvasSync"]
+        return try files.map { file in
+            guard let path = Bundle.main.url(forResource: file, withExtension: "js") else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+            return try String(contentsOf: path, encoding: .utf8)
+        }.joined(separator: "\n")
+    }
+    static func decode(_ json: String) throws -> Self {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let value = try decoder.singleValueContainer().decode(String.self)
+            guard let date = AuroraCodec.date(value) else { throw CocoaError(.fileReadCorruptFile) }
+            return date
+        }
+        return try decoder.decode(Self.self, from: Data(json.utf8))
+    }
     struct Course: Decodable {
         let id: String
         let name: String
@@ -195,7 +209,8 @@ struct CanvasSnapshot: Decodable {
                        done: previous?.manualCompletion ?? (status == "unverified" ? (previous?.done ?? done) : done),
                        starred: previous?.starred ?? false, remote: true,
                        manualCompletion: previous?.manualCompletion, url: url.flatMap { CanvasBrowser.isCampus($0) ? $0 : nil },
-                       feedback: feedback ?? previous?.feedback, customTitle: previous?.customTitle, syncStatus: status)
+                       feedback: feedback ?? previous?.feedback, customTitle: previous?.customTitle, syncStatus: status,
+                       deadlineKnown: due != nil || dueKnown == true || previous?.deadlineKnown == true)
         }
     }
 

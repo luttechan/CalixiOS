@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WebKit
 
 @main
 struct CalixApp: App {
@@ -28,7 +29,7 @@ struct CalixApp: App {
                 }
                 .task {
                     #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("-calix-smoke") { CalixScreenshot.runSmokeCheck() }
+                    if ProcessInfo.processInfo.arguments.contains("-calix-smoke") { await CalixScreenshot.runSmokeCheck() }
                     await CalixScreenshot.runWireCheck()
                     #endif
                 }
@@ -42,13 +43,13 @@ struct CalixApp: App {
 
 #if DEBUG
 enum CalixScreenshot {
-    @MainActor static func runSmokeCheck() {
+    @MainActor static func runSmokeCheck() async {
         let fixture = """
         {"owner":"13","courses":[{"id":"42","name":"Methods","assignments":[{"id":"canvas:42:assignment:4","title":"New Title","course":"Methods","kind":"과제","done":true,"status":"graded"}],"videos":null,"modulesUnchanged":true,"modulesVerified":true,"modulesValidator":"example"}]}
         """
         let report: String
         do {
-            let snapshot = try JSONDecoder().decode(CanvasSnapshot.self, from: Data(fixture.utf8))
+            let snapshot = try CanvasSnapshot.decode(fixture)
             var data = CalixData()
             data.preferences.mainTerm = "검증 학기"
             let originalDue = AuroraCodec.date("2026-11-29T21:30:00+09:00")
@@ -67,11 +68,67 @@ enum CalixScreenshot {
                 roundTrip.preferences.theme == .vesper
             let aurora = try verifyAurora()
             let profile = try verifyProfile()
-            report = valid && aurora && profile ? "PASS" : "Canvas, Aurora, or profile verification failed"
+            let deadlines = try await verifyCanvasDeadlineTransport()
+            report = valid && aurora && profile && deadlines ? "PASS" : "Canvas, Aurora, or profile verification failed"
         } catch {
             report = String(describing: error)
         }
         try? report.write(to: URL.documentsDirectory.appendingPathComponent("calix-smoke.txt"), atomically: true, encoding: .utf8)
+    }
+
+    @MainActor private static func verifyCanvasDeadlineTransport() async throws -> Bool {
+        let browser = WKWebView()
+        browser.loadHTMLString("<html><body>Canvas deadline fixture</body></html>", baseURL: nil)
+        try await Task.sleep(for: .milliseconds(200))
+        for _ in 0..<40 where browser.isLoading { try await Task.sleep(for: .milliseconds(100)) }
+        let fixture = """
+        const origin = "https://canvas.bufs.ac.kr";
+        const location = {origin};
+        const window = {};
+        const anchor = {textContent: "Weekly video", getAttribute: () => "/courses/42/modules/items/71"};
+        const item = {querySelector(selector) {
+            if (selector.includes("icon")) return {classList: ["movie"]};
+            if (selector.includes("left-title")) return anchor;
+            if (selector.includes("due_at")) return {textContent: "11월 29일 오후 11:59"};
+            return null;
+        }};
+        const root = {
+            getAttribute: key => ({"data-canvas_course_id":"42","data-user_id":"13","data-term":"2026학년도 2학기"})[key],
+            querySelectorAll: selector => selector === ".xnmb-module_item-wrapper" ? [item] : [],
+        };
+        const frame = {
+            style: {}, remove() {}, setAttribute() {},
+            contentDocument: {URL: origin + "/learningx/lti/modulebuilder", querySelector: () => root, querySelectorAll: () => []},
+        };
+        const document = {cookie: "", createElement: () => frame, documentElement: {appendChild() {}}};
+        window[Symbol.for("calix.canvas.modules")] = {collect: async () => ({
+            items: [], complete: false, learningx: {present: true, url: origin + "/courses/42/external_tools/9"},
+        })};
+        const fixtures = {
+            "/api/v1/users/self/profile": {id: 13},
+            "/api/v1/courses": [{id:42,name:"Course"}],
+            "/api/v1/courses/42/assignments": [{id:4,name:"Assignment",due_at:null}],
+            "/api/v1/planner/items": [{course_id:42,plannable_id:4,plannable_type:"assignment",
+                plannable:{id:4,title:"Assignment",due_at:"2026-11-30T14:59:00Z"}}],
+        };
+        const fetch = async url => {
+            if (url.pathname.startsWith("/learningx/")) return {status:403,ok:false};
+            return {ok:true,headers:new Headers(),text:async () => JSON.stringify(fixtures[url.pathname] ?? [])};
+        };
+        """
+        let source = try CanvasSnapshot.script()
+        let result = try await browser.callAsyncJavaScript(
+            fixture + "\n" + source,
+            arguments: ["expectedOwner": "13", "includeAttendance": false, "knownModules": [String: String]()],
+            in: nil, contentWorld: .page
+        )
+        guard let json = result as? String else { return false }
+        var data = CalixData()
+        try CanvasSnapshot.decode(json).merge(into: &data)
+        let assignment = data.events.first { $0.id == "canvas:42:assignment:4" }
+        let video = data.events.first { $0.id == "canvas:42:video:71" }
+        return assignment?.due != nil && assignment?.due == AuroraCodec.date("2026-11-30T14:59:00Z") &&
+            video?.due != nil && video?.due == AuroraCodec.date("2026-11-29T14:59:00Z")
     }
 
     @MainActor private static func verifyProfile() throws -> Bool {

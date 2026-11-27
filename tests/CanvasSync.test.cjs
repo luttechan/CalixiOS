@@ -11,6 +11,7 @@ const root = "/learningx/api/v1/courses/42";
 const fixtures = new Map([
     ["/api/v1/users/self/profile", { id: 13 }],
     ["/api/v1/courses", [{ id: 42, name: "Algorithms" }]],
+    ["/api/v1/planner/items", []],
     ["/api/v1/courses/42/assignments", [{
         id: 4, name: "Project", due_at: "2026-11-20T23:59:00+09:00", html_url: "https://outside.invalid/",
         submission: { workflow_state: "graded", submission_comments: [{ comment: "Good" }] },
@@ -58,8 +59,8 @@ function transport({ fail, carryNext = false, deep = false, unchanged = false, o
     };
 }
 
-const run = (owner, attendance, fetch, validators, window) =>
-    sync(owner, attendance, { origin }, { cookie: "xn_api_token=fixture-token" }, fetch, validators, window).then(JSON.parse);
+const run = (owner, attendance, fetch, validators, window, document = { cookie: "xn_api_token=fixture-token" }) =>
+    sync(owner, attendance, { origin }, document, fetch, validators, window).then(JSON.parse);
 
 test("projects paginated assignments, LearningX video, and explicit attendance states", async () => {
     const value = await run("13", true, transport({ carryNext: true }));
@@ -169,4 +170,65 @@ test("reads only the owner's submission with embedded assignment when assignment
     };
     const [course] = (await run("13", false, fetch)).courses;
     assert.deepEqual(course.assignments.map(row => [row.id, row.due]), [["canvas:42:assignment:4", "2026-11-21T14:59:00.000Z"]]);
+});
+
+test("recovers Canvas due dates from the signed-in student's planner", async () => {
+    const planner = "/api/v1/planner/items";
+    const rows = [
+        { course_id: 42, plannable_id: 4, plannable_type: "assignment", plannable_date: "2026-11-29T14:59:00Z",
+            plannable: { id: 4, title: "Project", due_at: "2026-11-29T14:59:00Z" } },
+        { course_id: 43, plannable_id: 8, plannable_type: "assignment",
+            plannable: { id: 8, title: "Other course", due_at: "2026-11-29T14:59:00Z" } },
+        { course_id: 42, plannable_id: 9, plannable_type: "planner_note",
+            plannable: { id: 9, title: "Personal note", due_at: "2026-11-29T14:59:00Z" } },
+    ];
+    const overrides = { [planner]: rows, "/api/v1/courses/42/assignments": [{ id: 4, name: "Project", due_at: null }] };
+    const fetch = transport({ overrides });
+    const [course] = (await run("13", false, (url, settings) => {
+        if (url.pathname === planner) {
+            assert.match(url.searchParams.get("start_date"), /^\d{4}-\d{2}-\d{2}$/);
+            assert.match(url.searchParams.get("end_date"), /^\d{4}-\d{2}-\d{2}$/);
+            assert.equal(url.searchParams.has("observed_user_id"), false);
+        }
+        return fetch(url, settings);
+    })).courses;
+    assert.deepEqual(course.assignments.map(row => [row.id, row.due]), [
+        ["canvas:42:assignment:4", "2026-11-29T14:59:00.000Z"],
+    ]);
+});
+
+test("starts LearningX with the verified course tool and retries the video API", async () => {
+    let inserted = false, removed = false, calls = 0;
+    const tool = origin + "/courses/42/external_tools/9";
+    const anchor = { textContent: "Lecture", getAttribute: () => "/courses/42/modules/items/71" };
+    const item = { querySelector: selector => selector.includes("icon") ? { classList: ["movie"] }
+        : selector.includes("left-title") ? anchor : selector.includes("due_at") ? { textContent: "11월 29일 오후 11:59" } : null };
+    const page = {
+        getAttribute: key => ({"data-canvas_course_id": "42", "data-user_id": "13", "data-term": "2026학년도 2학기"})[key],
+        querySelectorAll: selector => selector === ".xnmb-module_item-wrapper" ? [item] : [],
+    };
+    const frame = { style: {}, setAttribute() {}, remove: () => { removed = true; },
+        contentDocument: { URL: origin + "/learningx/lti/modulebuilder", querySelector: () => page, querySelectorAll: () => [] } };
+    const document = { get cookie() { return inserted ? "xn_api_token=fixture-token" : ""; },
+        createElement: () => frame, documentElement: { appendChild: value => {
+            assert.equal(value.src, tool);
+            inserted = true;
+        } } };
+    const window = { [Symbol.for("calix.canvas.modules")]: {
+        collect: async () => ({ items: [], complete: false, learningx: { present: true, url: tool } }),
+    } };
+    const modules = root + "/modules";
+    const fetch = transport({ overrides: { [modules]: [{ module_items: [
+        { title: "Lecture", module_item_id: 71, content_data: {item_id: 91, item_content_type: "movie", due_at: "2026-11-30T14:59:00Z"} },
+    ] }] } });
+    const [course] = (await run("13", false, (url, settings) => {
+        if (url.pathname === modules) {
+            calls++;
+            if (!inserted) return { status: 403, ok: false };
+        }
+        return fetch(url, settings);
+    }, {}, window, document)).courses;
+    assert.equal(calls, 2);
+    assert.equal(removed, true);
+    assert.equal(course.videos[0].due, "2026-11-30T14:59:00.000Z");
 });

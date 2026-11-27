@@ -20,6 +20,7 @@
 "기한" = "Due date";
 "기한 경과" = "Overdue";
 "기한 없음" = "No deadline";
+"기한 미확인" = "Deadline unconfirmed";
 "긴급 마감" = "Urgent deadline";
 "긴급 알림 시점" = "Urgent reminder timing";
 "날짜" = "Date";

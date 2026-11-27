@@ -24,6 +24,9 @@ struct CalixEvent: Codable, Identifiable, Equatable {
     var starts: Date? = nil
     var auroraCategory: String? = nil
     var auroraColor: String? = nil
+    var deadlineKnown: Bool? = nil
+
+    var deadlineUnconfirmed: Bool { remote && due == nil && deadlineKnown != true }
 }
 
 struct CanvasCourse: Codable, Identifiable {
