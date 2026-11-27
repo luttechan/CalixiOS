@@ -7,7 +7,7 @@ const publishProgress = (stage, completed = 0, total = 0) => {
 };
 
 const parse = (body) => JSON.parse(body.trimStart().replace(/^while\s*\(\s*1\s*\)\s*;/, ""));
-const request = async (path, learning = false, validator = null, timeout = 12000) => {
+const request = async (path, learning = false, validator = null, timeout = 12000, referrer) => {
     const url = new URL(path, location.origin);
     if (url.origin !== location.origin) throw Error("UNEXPECTED_ORIGIN");
     const headers = { Accept: "application/json" };
@@ -19,7 +19,7 @@ const request = async (path, learning = false, validator = null, timeout = 12000
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
-        const res = await fetch(url, { credentials: "same-origin", redirect: "error", headers, signal: controller.signal });
+        const res = await fetch(url, { credentials: "same-origin", redirect: "error", headers, signal: controller.signal, referrer });
         if (res.status === 401 || res.status === 403) throw Error("AUTH_REQUIRED");
         if (res.status === 304 && headers["If-None-Match"]) return { unchanged: true, validator };
         if (!res.ok) throw Error(`HTTP_${res.status}`);
@@ -37,12 +37,12 @@ const failureCode = reason => {
     return reason?.name === "TypeError" ? "network" : "response";
 };
 
-const list = async (initial, partial) => {
+const list = async (initial, partial, referrer) => {
     const rows = [];
     let next = initial;
     try {
         for (let page = 0; next && page < 25; page++) {
-            const value = await request(next);
+            const value = await request(next, false, null, 12000, referrer);
             if (!Array.isArray(value.data)) throw Error("INVALID_LIST");
             rows.push(...value.data);
             next = value.next;
@@ -315,23 +315,32 @@ const recoverCalendar = async courseIDs => {
 
 const readAssignments = async (base) => {
     const query = "exclude_response_fields[]=description&override_assignment_dates=true&per_page=100";
+    const referrer = location.origin + base.replace("/api/v1", "") + "/assignments";
     const records = new Map();
     const put = rows => {
         for (const row of rows) {
             const key = id(row?.id);
-            if (key && !records.has(key)) records.set(key, row);
+            if (!key || typeof row.name !== "string" || row.published === false) continue;
+            const first = records.get(key);
+            if (!first) records.set(key, row);
+            else if (!firstDate(first.submission?.cached_due_date, first.due_at) && date(row.due_at)) {
+                records.set(key, {...first, due_at: row.due_at});
+            }
         }
     };
     let problem = null;
     let answered = false;
     try {
-        put(await list(base + "/assignments?include[]=submission&" + query, error => { problem = error; }));
+        put(await list(base + "/assignments?include[]=submission&" + query, error => { problem = error; }, referrer));
         answered = true;
-        if (records.size && !problem) return {rows: [...records.values()], status: "ok"};
+        if (records.size && !problem && [...records.values()].every(row => firstDate(row.submission?.cached_due_date, row.due_at))) {
+            return {rows: [...records.values()], status: "ok"};
+        }
     } catch (reason) { problem = failureCode(reason); }
     try {
         let groupsPartial = false;
-        const groups = await list(base + "/assignment_groups?include[]=assignments&" + query, () => { groupsPartial = true; });
+        const groups = await list(base + "/assignment_groups?include[]=assignments&include[]=discussion_topic&" + query,
+            () => { groupsPartial = true; }, referrer);
         answered = true;
         put(groups.flatMap(group => Array.isArray(group.assignments) ? group.assignments : []));
         if (records.size) return {rows: [...records.values()], status: groupsPartial ? "partial" : problem ? "fallback" : "ok"};
@@ -346,6 +355,7 @@ const gather = async (row) => {
     if (!courseID) throw Error("INVALID_COURSE");
     const name = clip(row.name || row.course_code) || `과목 ${courseID}`;
     const base = `/api/v1/courses/${courseID}`;
+    const assignmentPage = location.origin + `/courses/${courseID}/assignments`;
     const learning = `/learningx/api/v1/courses/${courseID}`;
     const cached = typeof knownModules === "object" && knownModules !== null ? knownModules[courseID] : null;
     let attendanceRequest;
@@ -404,7 +414,7 @@ const gather = async (row) => {
             return { rows: rows ?? [], validator: response?.validator };
         })(),
         includeAttendance ? readAttendance(name, courseID, learning, attendanceItems) : Promise.resolve(null),
-        list(submissionPath)
+        list(submissionPath, null, assignmentPage)
     ]);
     const ownSubmissions = rows => rows.filter(row => id(row?.user_id) === owner);
     const enriched = submissions.status === "fulfilled" ? new Map(ownSubmissions(submissions.value)
@@ -412,7 +422,7 @@ const gather = async (row) => {
     const assignmentSource = assigned.status === "fulfilled" ? assigned.value.status : failureCode(assigned.reason);
     let assignedItems = assigned.status === "fulfilled" ? assigned.value.rows : null;
     if (!assignedItems?.length && enriched.size) {
-        const withAssignments = await list(submissionPath + "&include[]=assignment").catch(() => []);
+        const withAssignments = await list(submissionPath + "&include[]=assignment", null, assignmentPage).catch(() => []);
         const fromSubmissions = [];
         for (const submission of ownSubmissions(withAssignments)) {
             const assignmentID = id(submission.assignment_id);
@@ -427,7 +437,8 @@ const gather = async (row) => {
         const missing = [...enriched.keys()].filter(key => key && !known.has(key)).slice(0, 24);
         for (let i = 0; i < missing.length; i += 4) {
             const results = await Promise.all(missing.slice(i, i + 4).map(async key => {
-                const response = await request(base + `/assignments/${key}?include[]=submission&override_assignment_dates=true`, false, null, 4000).catch(() => null);
+                const response = await request(base + `/assignments/${key}?include[]=submission&override_assignment_dates=true`,
+                    false, null, 4000, assignmentPage).catch(() => null);
                 return id(response?.data?.id) === key ? response.data : null;
             }));
             const recovered = results.filter(Boolean);
@@ -453,7 +464,7 @@ const gather = async (row) => {
         const due = firstDate(submission?.cached_due_date, item.submission?.cached_due_date, item.due_at);
         const done = Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded";
         return [{ id: `canvas:${courseID}:assignment:${assignmentID}`, title: clip(item.name), course: name, kind: "과제",
-            due, dueKnown: due !== null || (item.due_at === null && submission?.cached_due_date === null),
+            due, dueKnown: due !== null || (item.due_at === null && !item.has_overrides && submission?.cached_due_date === null),
             done, completionKnown: done || Boolean(workflow) || submission?.missing === true,
             url: link(item.html_url) || link(`${base.replace("/api/v1", "")}/assignments/${assignmentID}`),
             status: submission?.missing ? "missing" : workflow === "graded" ? "graded" : submission?.late ? "late" :
@@ -480,7 +491,8 @@ for (let i = 0; i < courses.length; i += 3) {
 }
 publishProgress("planner");
 const planner = await plannerPromise;
-const affected = output.filter(course => course.assignmentSource !== "ok" || !course.assignments?.length).map(course => course.id);
+const affected = output.filter(course => course.assignmentSource !== "ok" || !course.assignments?.length ||
+    course.assignments.some(row => !row.due)).map(course => course.id);
 let calendarStatus = "skipped", calendarUsed = 0, plannerUsed = 0;
 const calendar = new Map();
 const calendarBatches = Math.ceil(affected.length / 10);
@@ -515,7 +527,7 @@ for (const course of output) {
                 saved.status = row.status;
                 saved.completionKnown = true;
             }
-            if (row.due) {
+            if (!saved.due && row.due) {
                 saved.due = row.due;
                 saved.dueKnown = true;
                 plannerUsed++;

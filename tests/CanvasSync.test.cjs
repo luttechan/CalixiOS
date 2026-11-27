@@ -13,6 +13,7 @@ const fixtures = new Map([
     ["/api/v1/courses", [{ id: 42, name: "Algorithms" }]],
     ["/api/v1/planner/items", []],
     ["/api/v1/calendar_events", []],
+    ["/api/v1/courses/42/assignment_groups", []],
     ["/api/v1/courses/42/assignments", [{
         id: 4, name: "Project", due_at: "2026-11-20T23:59:00+09:00", html_url: "https://outside.invalid/",
         submission: { workflow_state: "graded", submission_comments: [{ comment: "Good" }] },
@@ -143,6 +144,34 @@ test("reads the student's submission deadline and nested LearningX periods", asy
     const [course] = (await run("13", false, transport({ overrides }))).courses;
     assert.equal(course.assignments[0].due, "2026-11-20T13:30:00.000Z");
     assert.equal(course.videos[0].due, "2026-11-23T14:59:00.000Z");
+});
+
+test("fills missing dates from the course's assignment groups even after a successful assignment list", async () => {
+    const assignmentList = "/api/v1/courses/42/assignments";
+    const assignmentGroups = "/api/v1/courses/42/assignment_groups";
+    const calendar = "/api/v1/calendar_events";
+    const overrides = {
+        [assignmentList]: [{ id: 4, name: "Course task", due_at: null }, { id: 5, name: "Final task" }],
+        [assignmentGroups]: [{ assignments: [{ id: 4, name: "Course task", due_at: "2026-09-22T09:00:00Z" },
+            { id: 6, name: "Group-only task", due_at: "2026-12-01T15:00:00Z" }] }],
+        [calendar]: [{ context_code: "course_42", start_at: "2026-12-08T14:59:00Z", assignment: { id: 5, name: "Final task" } }],
+    };
+    const result = await run("13", false, async (url, options) => {
+        if (url.pathname === assignmentList || url.pathname === assignmentGroups) {
+            assert.equal(options.referrer, origin + "/courses/42/assignments");
+            if (url.pathname === assignmentGroups) {
+                assert.deepEqual(url.searchParams.getAll("include[]"), ["assignments", "discussion_topic"]);
+            }
+        }
+        return transport({ overrides })(url, options);
+    });
+    assert.deepEqual(result.courses[0].assignments.map(row => [row.id, row.due, row.done]), [
+        ["canvas:42:assignment:4", "2026-09-22T09:00:00.000Z", true],
+        ["canvas:42:assignment:5", "2026-12-08T14:59:00.000Z", false],
+        ["canvas:42:assignment:6", "2026-12-01T15:00:00.000Z", false],
+    ]);
+    assert.equal(result.courses[0].assignmentSource, "ok");
+    assert.equal(result.deadlineReport.calendarUsed, 1);
 });
 
 test("uses the LearningX item ID to recover video dates while attendance stays off", async () => {

@@ -532,6 +532,10 @@ private struct CalixSettings: View {
                     for item in imported.focusHistory where item.seconds > 0 { data.focusHistory.replace(item) }
                     data.holidays.merge(imported.holidays) { _, latest in latest }
                     data.offDays.merge(imported.offDays) { _, latest in latest }
+                    if let offDays = imported.preferences.timetableOffDays {
+                        let valid = offDays.mapValues { Array(Set($0.filter { (1...7).contains($0) })).sorted() }
+                        data.preferences.timetableOffDays = (data.preferences.timetableOffDays ?? [:]).merging(valid) { _, latest in latest }
+                    }
                     if windows {
                         for item in imported.grades { data.grades.replace(item) }
                         data.gradeScales = (data.gradeScales ?? [:]).merging(imported.gradeScales ?? [:]) { _, latest in latest }

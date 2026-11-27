@@ -289,6 +289,7 @@ struct TimetablePalette {
 struct CalixTimetable: View {
     let library: CalixLibrary
     @Environment(\.scenePhase) private var phase
+    @Environment(\.locale) private var locale
     @State private var term: String?
     @State private var day = Calendar.current.component(.weekday, from: .now)
     @State private var editing: CalixLesson?
@@ -296,8 +297,12 @@ struct CalixTimetable: View {
     @State private var showOffDay = false
     @State private var showTheme = false
     @State private var authorized = false
-    @State private var showFree = false
-    private let days = ["일", "월", "화", "수", "목", "금", "토"]
+    @State private var showWeeklyOffDays = false
+    @State private var weeklyOffDays: Set<Int> = []
+    @State private var detail: CalixLesson?
+    @State private var editAfterDetail: CalixLesson?
+    @State private var showTerm = false
+    @State private var termName = ""
 
     init(library: CalixLibrary) {
         self.library = library
@@ -308,15 +313,15 @@ struct CalixTimetable: View {
 
     var body: some View {
         let selected = term ?? library.data.preferences.mainTerm
-        let terms = Set(library.data.lessons.map(\.term) + [selected, library.data.preferences.mainTerm]).sorted()
+        let terms = Set(library.data.lessons.map(\.term) + [selected, library.data.preferences.mainTerm] +
+            Array((library.data.preferences.timetableOffDays ?? [:]).keys)).sorted()
         let items = library.data.lessons.filter { $0.term == selected }
-        let active = items.filter { $0.weekday == day && !$0.online }.sorted { $0.start < $1.start }
-        let online = items.filter(\.online)
+        let offDays = Set((library.data.preferences.timetableOffDays?[selected] ?? []).filter { (1...7).contains($0) })
+        let online = items.filter(\.online).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         let imported = library.data.auroraTimetableColors
         let override = library.data.preferences.timetableAppearance?[selected]
         let appearance = override ?? imported?.terms[selected] ?? imported?.base ??
             TimetableAppearance(theme: TimetablePalette.matching(library.data.preferences.theme))
-        let palette = appearance.palette
         let courseSlots: [String: Int] = {
             var slots: [String: Int] = [:]
             for item in items where slots[courseKey(item)] == nil { slots[courseKey(item)] = slots.count % 8 }
@@ -326,50 +331,99 @@ struct CalixTimetable: View {
             if library.data.preferences.lockTimetable && !authorized {
                 ProtectedView(library: library, title: "시간표", access: $authorized)
             } else {
-                List {
-                    Picker("학기", selection: Binding(get: { selected }, set: { term = $0 })) {
-                        ForEach(terms, id: \.self) { Text($0).tag($0) }
-                    }
-                    Picker("요일", selection: $day) {
-                        ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { index in Text(days[index - 1]).tag(index) }
-                    }.pickerStyle(.segmented)
-                    Section("\(days[day - 1])요일") {
-                        if active.isEmpty { Text("등록된 수업이 없습니다.").foregroundStyle(.secondary) }
-                        ForEach(active) { item in
-                            row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0))
-                                .listRowBackground(Color(uiColor: palette.rowSurface))
+                VesperPage {
+                    HStack(spacing: 8) {
+                        Picker("학기", selection: Binding(get: { selected }, set: { term = $0 })) {
+                            ForEach(terms, id: \.self) { Text(LocalizedStringKey($0)).tag($0) }
+                        }
+                        .labelsHidden()
+                        Spacer(minLength: 0)
+                        Menu {
+                            Button("공강 설정", systemImage: "sun.max") {
+                                weeklyOffDays = offDays
+                                showWeeklyOffDays = true
+                            }
+                            Button("시간표 테마", systemImage: "paintpalette") { showTheme = true }
+                            Button("학기 추가", systemImage: "calendar.badge.plus") { termName = ""; showTerm = true }
+                            Button("휴강일 관리", systemImage: "calendar.badge.clock") { showOffDay = true }
+                            if selected != library.data.preferences.mainTerm {
+                                Button("기본 학기로 설정", systemImage: "pin") { library.update { $0.preferences.mainTerm = selected } }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle").font(.title3).frame(minWidth: 44, minHeight: 44)
                         }
                     }
-                    Section("비대면") {
-                        if online.isEmpty { Text("등록된 비대면 수업이 없습니다.").foregroundStyle(.secondary) }
-                        ForEach(online) { item in
-                            row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0))
-                                .listRowBackground(Color(uiColor: palette.rowSurface))
+                    .padding(.horizontal, 8)
+                    .vesperSurface()
+                    TimetableWeekGrid(layout: TimetableGridLayout(lessons: items, offDays: offDays), offDays: offDays,
+                                      palette: appearance.palette) { item in
+                        appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0)
+                    } open: { detail = $0 }
+                    if !online.isEmpty {
+                        VesperSection(title: "비대면") {
+                            ForEach(online) { item in
+                                row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0))
+                                    .padding(12).vesperSurface()
+                            }
                         }
                     }
-                    DisclosureGroup("공강 찾기", isExpanded: $showFree) {
-                        let intervals = freeSlots(active)
-                        if intervals.isEmpty { Text("30분 이상 비어 있는 시간이 없습니다.") }
-                        ForEach(intervals, id: \.self) { Text($0).monospacedDigit() }
-                    }
-                    Button("휴강일 관리") { showOffDay = true }
-                    if selected != library.data.preferences.mainTerm {
-                        Button("기본 학기로 설정") { library.update { $0.preferences.mainTerm = selected } }
-                    }
                 }
-                .scrollContentBackground(.hidden)
-                .background(Color(uiColor: TimetablePalette.hex(palette.surface) ?? .systemGroupedBackground))
-                .environment(\.colorScheme, palette.dark ? .dark : .light)
-                .tint(Color(uiColor: palette.readableAccent))
-                .toolbar {
-                    Button { showTheme = true } label: { Label("시간표 테마", systemImage: "paintpalette") }
-                    Button { editing = CalixLesson(term: selected, weekday: day) } label: { Label("수업 추가", systemImage: "plus") }
-                }
+                .toolbar { Button { editing = CalixLesson(term: selected, weekday: day) } label: { Label("수업 추가", systemImage: "plus") } }
             }
         }
         .navigationTitle("시간표")
         .onChange(of: phase) { _, newPhase in
-            if newPhase == .background { authorized = false; editing = nil; showOffDay = false; showTheme = false }
+            if newPhase == .background {
+                authorized = false; editing = nil; detail = nil; editAfterDetail = nil
+                showOffDay = false; showTheme = false; showWeeklyOffDays = false; showTerm = false
+            }
+        }
+        .sheet(isPresented: $showWeeklyOffDays) {
+            NavigationStack {
+                Form {
+                    ForEach(TimetableGridLayout.weekdays, id: \.self) { index in
+                        Toggle(dayLabel(index), isOn: Binding(get: { weeklyOffDays.contains(index) }, set: { enabled in
+                            if enabled { weeklyOffDays.insert(index) } else { weeklyOffDays.remove(index) }
+                        }))
+                    }
+                }
+                .navigationTitle("공강 설정")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("취소") { showWeeklyOffDays = false } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("저장") {
+                            if library.update({ data in
+                                var settings = data.preferences.timetableOffDays ?? [:]
+                                settings[selected] = weeklyOffDays.sorted()
+                                data.preferences.timetableOffDays = settings
+                            }) { showWeeklyOffDays = false }
+                        }
+                    }
+                }
+            }
+        }
+        .alert("학기 추가", isPresented: $showTerm) {
+            TextField("학기 이름", text: $termName)
+            Button("취소", role: .cancel) {}
+            Button("추가") {
+                let name = String(termName.trimmed.prefix(80))
+                if library.update({ data in
+                    var settings = data.preferences.timetableOffDays ?? [:]
+                    settings[name] = settings[name] ?? []
+                    data.preferences.timetableOffDays = settings
+                }) { term = name }
+            }.disabled(termName.trimmed.isEmpty)
+        }
+        .sheet(item: $detail, onDismiss: {
+            if let item = editAfterDetail { editing = item; editAfterDetail = nil }
+        }) { item in
+            TimetableLessonDetails(library: library, lesson: item, day: dayLabel(item.weekday)) {
+                editAfterDetail = item
+                detail = nil
+            } remove: {
+                if library.update({ $0.lessons.removeAll { $0.id == item.id } }) { detail = nil }
+            }
         }
         .sheet(isPresented: $showTheme) {
             NavigationStack {
@@ -406,7 +460,7 @@ struct CalixTimetable: View {
                 Toggle("비대면", isOn: item.online)
                 if !item.wrappedValue.online {
                     Picker("요일", selection: item.weekday) {
-                        ForEach(1...7, id: \.self) { Text("\(days[$0 - 1])요일").tag($0) }
+                        ForEach(TimetableGridLayout.weekdays, id: \.self) { Text(dayLabel($0)).tag($0) }
                     }
                     DatePicker("시작", selection: clock(item.start), displayedComponents: .hourAndMinute)
                     DatePicker("종료", selection: clock(item.end), displayedComponents: .hourAndMinute)
@@ -469,19 +523,18 @@ struct CalixTimetable: View {
     }
 
     private func row(_ item: CalixLesson, color: Color) -> some View {
-        Button { editing = item } label: {
+        Button { detail = item } label: {
             HStack(spacing: 11) {
                 RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 3, height: 30).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).foregroundStyle(.primary)
-                    if !item.online { Text("\(time(item.start))–\(time(item.end))").monospacedDigit().foregroundStyle(.secondary) }
+                    if !item.online { Text("\(timetableTime(item.start))–\(timetableTime(item.end))").monospacedDigit().foregroundStyle(.secondary) }
                     let details = [item.room, item.lecturer].filter { !$0.isEmpty }
                     if !details.isEmpty { Text(details.joined(separator: ", ")).foregroundStyle(.secondary) }
                 }
             }
         }
         .buttonStyle(.plain)
-        .swipeActions { Button("삭제", role: .destructive) { library.update { $0.lessons.removeAll { $0.id == item.id } } } }
     }
 
     private func clock(_ minutes: Binding<Int>) -> Binding<Date> {
@@ -493,18 +546,185 @@ struct CalixTimetable: View {
         })
     }
 
-    private func time(_ minutes: Int) -> String { String(format: "%02d:%02d", minutes / 60, minutes % 60) }
+    private func dayLabel(_ day: Int) -> String {
+        Calendar(identifier: .gregorian).localizedWeekday(day, locale: locale, short: false)
+    }
+}
 
-    private func freeSlots(_ active: [CalixLesson]) -> [String] {
-        var cursor = 8 * 60
-        let closing = 20 * 60
-        var result: [String] = []
-        for lesson in active where lesson.end > cursor && lesson.start < closing {
-            if lesson.start - cursor >= 30 { result.append("\(time(cursor))–\(time(lesson.start))") }
-            cursor = max(cursor, lesson.end)
+private extension Calendar {
+    func localizedWeekday(_ index: Int, locale: Locale, short: Bool) -> String {
+        var calendar = self
+        calendar.locale = locale
+        let symbols = short ? calendar.shortStandaloneWeekdaySymbols : calendar.standaloneWeekdaySymbols
+        return symbols.indices.contains(index - 1) ? symbols[index - 1] : ""
+    }
+}
+
+private func timetableTime(_ minutes: Int) -> String {
+    String(format: "%02d:%02d", minutes / 60, minutes % 60)
+}
+
+private struct TimetableWeekGrid: View {
+    @Environment(\.locale) private var locale
+    @ScaledMetric(relativeTo: .subheadline) private var hour: CGFloat = 46
+    @ScaledMetric(relativeTo: .caption2) private var minimumDayWidth: CGFloat = 56
+    let layout: TimetableGridLayout
+    let offDays: Set<Int>
+    let palette: TimetablePalette
+    let color: (CalixLesson) -> Color
+    let open: (CalixLesson) -> Void
+    private let gutter: CGFloat = 39
+
+    private var hours: Int { (layout.end - layout.start) / 60 }
+    private var accent: Color { Color(uiColor: palette.readableAccent) }
+    private var divider: Color { Color.primary.opacity(palette.dark ? 0.16 : 0.12) }
+
+    var body: some View {
+        let dayHeight = CGFloat(hours) * hour
+        GeometryReader { geometry in
+            let width = max(minimumDayWidth, (geometry.size.width - gutter) / CGFloat(layout.days.count))
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 0) {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Color.clear.frame(height: 38)
+                        ForEach(0..<hours, id: \.self) { index in
+                            Text(timetableTime(layout.start + index * 60))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: hour, alignment: .topTrailing)
+                                .padding(.trailing, 4)
+                        }
+                    }
+                    .frame(width: gutter)
+                    .accessibilityHidden(true)
+                    ForEach(layout.days, id: \.self) { day in
+                        column(day, width: width, height: dayHeight)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
         }
-        if closing - cursor >= 30 { result.append("\(time(cursor))–\(time(closing))") }
-        return result
+        .frame(height: dayHeight + 38)
+        .background(Color(uiColor: TimetablePalette.hex(palette.surface) ?? palette.rowSurface))
+        .clipShape(RoundedRectangle(cornerRadius: 15))
+        .overlay { RoundedRectangle(cornerRadius: 15).strokeBorder(divider).allowsHitTesting(false) }
+        .environment(\.colorScheme, palette.dark ? .dark : .light)
+    }
+
+    private func column(_ day: Int, width: CGFloat, height: CGFloat) -> some View {
+        let free = offDays.contains(day)
+        let name = Calendar(identifier: .gregorian).localizedWeekday(day, locale: locale, short: true)
+        return VStack(spacing: 0) {
+            Text(name).font(.caption.weight(.semibold)).lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 38)
+                .foregroundStyle(free ? accent : Color.primary)
+                .background(divider.opacity(0.32))
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: 0) {
+                    ForEach(0..<hours, id: \.self) { _ in
+                        Rectangle().fill(divider).frame(height: 1)
+                            .frame(height: hour, alignment: .top)
+                    }
+                }
+                .accessibilityHidden(true)
+                if free {
+                    VStack(spacing: 6) {
+                        Image(systemName: "sun.max").font(.headline).accessibilityHidden(true)
+                        Text("공강").font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 18)
+                }
+                ForEach(layout.slots[day, default: []]) { slot in
+                    let segment = width / CGFloat(slot.lanes)
+                    let duration = CGFloat(slot.lesson.end - slot.lesson.start) / 60 * hour
+                    lessonTile(slot.lesson, width: max(1, segment - 4), height: max(1, duration - 3))
+                        .offset(x: CGFloat(slot.lane) * segment + 2,
+                                y: CGFloat(slot.lesson.start - layout.start) / 60 * hour + 1.5)
+                }
+            }
+            .frame(height: height)
+        }
+        .frame(width: width)
+        .background(free ? accent.opacity(0.095) : .clear)
+        .overlay(alignment: .leading) { Rectangle().fill(divider).frame(width: 1).allowsHitTesting(false) }
+    }
+
+    private func lessonTile(_ lesson: CalixLesson, width: CGFloat, height: CGFloat) -> some View {
+        let tint = color(lesson)
+        let time = "\(timetableTime(lesson.start))–\(timetableTime(lesson.end))"
+        return Button { open(lesson) } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(lesson.title).font(.caption2.weight(.semibold))
+                    .lineLimit(height >= 43 ? 2 : 1)
+                if height >= 62, width >= 53 {
+                    Text(timetableTime(lesson.start)).font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 5)
+            .frame(width: width, height: height, alignment: .leading)
+            .background { Color(uiColor: palette.rowSurface).overlay(tint.opacity(0.12)) }
+            .overlay(alignment: .leading) { Rectangle().fill(tint).frame(width: 2) }
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(lesson.title))
+        .accessibilityValue(Text(time))
+    }
+}
+
+private struct TimetableLessonDetails: View {
+    @Environment(\.dismiss) private var dismiss
+    let library: CalixLibrary
+    let lesson: CalixLesson
+    let day: String
+    let edit: () -> Void
+    let remove: () -> Void
+    @State private var showDelete = false
+    @State private var filter = 0
+
+    var body: some View {
+        let className = library.data.canvasCourses?[lesson.auroraCourseID.map(String.init) ?? ""]?.name ?? lesson.title
+        let related = library.data.events.filter { event in
+            let courseID = event.id.split(separator: ":").dropFirst().first.map(String.init)
+            let matches = lesson.auroraCourseID.map { courseID == String($0) } ?? false
+            return event.remote && (matches || event.course == className) &&
+                (filter == 1 || event.done == (filter == 2))
+        }.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) }
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent("교수", value: lesson.lecturer.isEmpty ? "—" : lesson.lecturer)
+                    if lesson.online { LabeledContent("시간") { Text("비대면") } }
+                    else { LabeledContent("시간", value: "\(day) \(timetableTime(lesson.start))–\(timetableTime(lesson.end))") }
+                    LabeledContent("강의실", value: lesson.room.isEmpty ? "—" : lesson.room)
+                }
+                Picker("상태", selection: $filter) {
+                    Text("미완료").tag(0); Text("전체").tag(1); Text("완료").tag(2)
+                }.pickerStyle(.segmented)
+                ForEach([EventKind.assignment, .video], id: \.self) { kind in
+                    Section(LocalizedStringKey(kind.rawValue)) {
+                        let events = related.filter { $0.kind == kind }
+                        if events.isEmpty { Text("일정 없음").foregroundStyle(.secondary) }
+                        ForEach(events) { item in EventLink(id: item.id, library: library) }
+                    }
+                }
+                Button("수업 삭제", role: .destructive) { showDelete = true }
+            }
+            .navigationTitle(lesson.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("편집", action: edit) }
+            }
+            .confirmationDialog("수업을 삭제하시겠습니까?", isPresented: $showDelete, titleVisibility: .visible) {
+                Button("삭제", role: .destructive, action: remove)
+            }
+        }
     }
 }
 

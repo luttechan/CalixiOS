@@ -79,7 +79,8 @@ enum CalixScreenshot {
             let saved = CanvasSyncProgress(stage: .saving, completed: 0, total: 0, previous: measured, at: 72)
             let estimate = measured.remainingSeconds(at: 60) == 15 && measured.remainingSeconds(at: 72) == 5 &&
                 measured.remainingSeconds(at: 75) == nil && saved.remainingSeconds(at: 72) == nil
-            report = valid && aurora && profile && deadlines && countdown && calendar && estimate
+            let timetable = verifyTimetableGrid()
+            report = valid && aurora && profile && deadlines && countdown && calendar && estimate && timetable
                 ? "PASS" : "Canvas, Aurora, profile, calendar, or countdown verification failed"
         } catch {
             report = String(describing: error)
@@ -95,6 +96,16 @@ enum CalixScreenshot {
         let data = [CalixEvent(title: "Multi-day fixture", due: due, starts: start), CalixEvent(title: "Undated fixture")]
         let month = CalendarMonth(date: due, events: data, calendar: calendar)
         return month.days.count == 31 && month.markedDays == Set(month.days.prefix(2))
+    }
+
+    private static func verifyTimetableGrid() -> Bool {
+        let morning = CalixLesson(title: "First", weekday: 2, start: 420, end: 540)
+        let overlap = CalixLesson(title: "Second", weekday: 2, start: 480, end: 600)
+        let evening = CalixLesson(title: "Evening", weekday: 2, start: 1140, end: 1290)
+        let hidden = CalixLesson(title: "Day off", weekday: 7, start: 0, end: 1440)
+        let grid = TimetableGridLayout(lessons: [morning, overlap, evening, hidden], offDays: [7])
+        return grid.days.contains(7) && grid.slots[7] == nil && grid.start == 420 && grid.end == 1320 &&
+            grid.slots[2]?.map(\.lane) == [0, 1, 0] && grid.slots[2]?.map(\.lanes) == [2, 2, 1]
     }
 
     @MainActor private static func verifyCanvasDeadlineTransport() async throws -> Bool {
@@ -236,7 +247,9 @@ enum CalixScreenshot {
                 "event": ["m:fixture": .init(base: nil, value: ["title": .text("Vesper 개강 준비")])]
             ])
             let snapshot = try await AuroraConnection.sync(code, offer: offer)
-            report = snapshot.records["event"]?["manual:fixture"]?.revision == "aurora-fixture" ? "PASS" : "Unexpected response"
+            let confirmed = await AuroraConnection.confirm(code, receipt: id)
+            report = snapshot.records["event"]?["manual:fixture"]?.revision == "aurora-fixture" && confirmed
+                ? "PASS" : "Unexpected response"
         } catch {
             report = String(describing: error)
         }

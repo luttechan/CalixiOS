@@ -194,6 +194,7 @@ struct CalixPreferences: Codable {
     var standardReminders: Bool? = true
     var standardDays: Int? = 1
     var timetableAppearance: [String: TimetableAppearance]?
+    var timetableOffDays: [String: [Int]]?
 
     var hasSchoolProfile: Bool {
         guard let department, let studentNumber else { return false }

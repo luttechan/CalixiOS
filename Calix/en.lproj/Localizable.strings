@@ -149,6 +149,15 @@
 "이전 달" = "Previous month";
 "다음 달" = "Next month";
 "일정 있음" = "Scheduled events";
+"공강 설정" = "Set free days";
+"공강" = "Free day";
+"학기 추가" = "Add term";
+"학기 이름" = "Term name";
+"수업 삭제" = "Delete class";
+"수업을 삭제하시겠습니까?" = "Delete this class?";
+"편집" = "Edit";
+"기기 인증" = "Device authentication";
+"같은 Wi-Fi와 iPhone의 로컬 네트워크 권한을 확인하세요." = "Check Wi-Fi and allow local network access on your iPhone.";
 "지각" = "Late";
 "지금 잠금" = "Lock now";
 "집중 타이머" = "Focus timer";

@@ -10,6 +10,7 @@ struct AuroraPairing {
     let workspace: String
     let expires: Date
     let key: SymmetricKey
+    let version: String
 
     init(_ value: String, simulatorFixture: Bool = false) throws {
         guard value.utf8.count <= 1024,
@@ -24,7 +25,7 @@ struct AuroraPairing {
         #if DEBUG && targetEnvironment(simulator)
         allowedHost = allowedHost || (simulatorFixture && host == "127.0.0.1")
         #endif
-        guard fields["v"] == "2", allowedHost,
+        guard let version = fields["v"], ["2", "3"].contains(version), allowedHost,
               let port = fields["port"].flatMap(Int.init), (1024...65535).contains(port),
               let computer = fields["computer"], computer.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil,
               let unix = fields["expires"].flatMap(Double.init), unix.isFinite,
@@ -42,6 +43,7 @@ struct AuroraPairing {
         workspace = computer
         expires = expiry
         key = SymmetricKey(data: secret)
+        self.version = version
     }
 
     private static func isPrivate(_ value: String) -> Bool {
@@ -148,10 +150,16 @@ struct AuroraOffer: Encodable {
         let value: String
         let base: String?
     }
+    struct School: Encodable {
+        let id, title, course: String
+        let due, url, status: String?
+        let done: Bool
+    }
     let receipt, name: String
     let changes: [String: [String: Change]]
     var schoolOwner: String? = nil
     var nickname: Nickname? = nil
+    var school: [School]? = nil
 }
 
 enum AuroraCodec {
@@ -162,6 +170,10 @@ enum AuroraCodec {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         guard let bytes = try? encoder.encode(record) else { return "" }
         return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func identifier(_ kind: String, _ value: String) -> String {
+        kind + ":" + SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     static func timestamp(_ value: Date?) -> AuroraValue {
@@ -193,7 +205,7 @@ enum AuroraCodec {
 @MainActor
 enum AuroraWorkspace {
     typealias Entries = [String: [String: AuroraRecord]]
-    static let kinds = ["event", "canvasEdit", "task", "lesson", "grade", "journal", "focus", "holiday"]
+    static let kinds = ["event", "canvasEdit", "task", "lesson", "timetableTerm", "grade", "journal", "focus", "holiday"]
 
     static func uuid(_ identifier: String) -> UUID {
         let bytes = Array(SHA256.hash(data: Data(identifier.utf8)))
@@ -227,13 +239,16 @@ enum AuroraWorkspace {
                 "note": .text(item.note),
             ])
         }
-        for item in data.tasks where item.sourceID == nil {
+        for item in data.tasks {
             let choice = data.taskStatuses?.first { $0.name == item.status }
-            put("task", item.id.uuidString, mobile(item.id), [
+            let source = item.sourceID.flatMap { $0.hasPrefix("canvas:") ? $0 : nil }
+            let identifier = source.map { AuroraCodec.identifier("source", $0) } ?? mobile(item.id)
+            put("task", item.id.uuidString, identifier, [
                 "title": .text(item.title), "section": .text(item.section), "status": .text(item.status ?? (item.done ? "완료" : "계획")),
                 "statusColor": .text(item.auroraStatusColor ?? choice?.tint ?? ""), "done": .flag(item.done),
                 "due": AuroraCodec.timestamp(item.due), "note": .text(item.note ?? ""), "role": .text(item.role ?? ""),
                 "instructor": .text(item.instructor ?? ""), "category": .text(item.auroraCategory ?? ""),
+                "source": source.map(AuroraValue.text) ?? .empty,
             ])
         }
         for item in data.lessons {
@@ -241,6 +256,11 @@ enum AuroraWorkspace {
                 "title": .text(item.title), "term": .text(item.term), "weekday": .integer(item.weekday),
                 "start": .integer(item.start), "end": .integer(item.end), "room": .text(item.room),
                 "lecturer": .text(item.lecturer), "online": .flag(item.online), "color": .text(item.auroraColor ?? ""),
+            ])
+        }
+        for (term, days) in data.preferences.timetableOffDays ?? [:] {
+            put("timetableTerm", term, AuroraCodec.identifier("term", term), [
+                "title": .text(term), "days": .text(days.sorted().map(String.init).joined(separator: ",")),
             ])
         }
         for item in data.grades where item.canvasCourseID == nil {
@@ -265,27 +285,37 @@ enum AuroraWorkspace {
         return rows
     }
 
-    static func offer(_ data: CalixData, _ link: AuroraLinkState, receipt: String, name: String) -> AuroraOffer {
-        let local = collect(data, link)
+    static func offer(_ data: CalixData, _ link: AuroraLinkState, receipt: String, name: String, extended: Bool = true) -> AuroraOffer {
+        var local = collect(data, link)
+        if !extended { local["task"] = local["task"]?.filter { $0.value.string("source").isEmpty } }
         var changes: [String: [String: AuroraOffer.Change]] = [:]
-        for kind in kinds {
+        for kind in kinds where extended || kind != "timetableTerm" {
             let rows = local[kind] ?? [:]
             let anchors = link.anchors[kind] ?? [:]
             for (id, row) in rows where anchors[id]?.local != AuroraCodec.fingerprint(row) {
                 changes[kind, default: [:]][id] = .init(base: anchors[id]?.revision, value: row)
             }
-            for (id, original) in anchors where rows[id] == nil {
+            for (id, original) in anchors where rows[id] == nil && (extended || !id.hasPrefix("source:")) {
                 changes[kind, default: [:]][id] = .init(base: original.revision, value: nil)
             }
         }
         let nickname = CalixPreferences.cleanedNickname(data.preferences.nickname)
         let edited = nickname != (link.nickname?.vesper ?? "")
+        let school = !extended || data.canvasID == nil ? nil : data.events.compactMap { item -> AuroraOffer.School? in
+            guard item.remote, item.id.range(of: "^canvas:[0-9]{1,18}:(assignment|video):[A-Za-z0-9_-]{1,100}$",
+                                             options: .regularExpression) != nil else { return nil }
+            let due = item.due?.ISO8601Format()
+            return .init(id: item.id, title: String(item.title.prefix(500)), course: String(item.course.prefix(200)),
+                         due: due, url: item.url?.absoluteString, status: item.syncStatus,
+                         done: item.done && item.manualCompletion == nil && item.syncStatus != "unverified")
+        }
         return AuroraOffer(receipt: receipt, name: name, changes: changes,
                            schoolOwner: data.canvasID ?? data.auroraSchoolOwner,
-                           nickname: edited ? .init(value: nickname, base: link.nickname?.aurora) : nil)
+                           nickname: edited ? .init(value: nickname, base: link.nickname?.aurora) : nil,
+                           school: school)
     }
 
-    static func apply(_ snapshot: AuroraSnapshot, baseline: Entries, baselineNickname: String? = nil,
+    static func apply(_ snapshot: AuroraSnapshot, baseline: Entries, baselineNickname: String? = nil, extended: Bool = true,
                       data: inout CalixData, link: inout AuroraLinkState) {
         let before = collect(data, link)
         mergeSchool(snapshot, data: &data)
@@ -301,18 +331,22 @@ enum AuroraWorkspace {
                 link.nickname = .init(aurora: nickname, vesper: local)
             }
         }
-        for kind in kinds {
+        for kind in kinds where extended || kind != "timetableTerm" {
             if kind == "canvasEdit" && !matchingSchool { continue }
             guard let rows = snapshot.records[kind] else { continue }
             let anchors = link.anchors[kind] ?? [:]
-            let known = Set(rows.keys).union(anchors.keys)
+            let known = Set(rows.keys).union(anchors.keys).filter { extended || !$0.hasPrefix("source:") }
             for id in known {
+                if kind == "task" && id.hasPrefix("source:") && !matchingSchool { continue }
                 let key = kind + "/" + id
                 guard !conflicts.contains(key) else { continue }
                 let original = baseline[kind]?[id].map(AuroraCodec.fingerprint)
                 let actual = before[kind]?[id].map(AuroraCodec.fingerprint)
                 guard original == actual else { conflicts.insert(key); continue }
-                let native = localID(kind, id, link)
+                let source = rows[id]?.value.string("source") ?? ""
+                let currentTask = kind == "task" && !source.isEmpty ? data.tasks.first { $0.sourceID == source } : nil
+                let termName = kind == "timetableTerm" ? rows[id]?.value.string("title") : nil
+                let native = currentTask?.id.uuidString ?? termName ?? localID(kind, id, link)
                 if let row = rows[id] {
                     write(kind, native, row.value, courseID: row.courseID, data: &data)
                     link.native[kind, default: [:]][native] = id
@@ -327,12 +361,14 @@ enum AuroraWorkspace {
         for (kind, rows) in snapshot.records where kinds.contains(kind) {
             if kind == "canvasEdit" && !matchingSchool { continue }
             for (id, row) in rows where !conflicts.contains(kind + "/" + id) {
+                if kind == "task" && id.hasPrefix("source:") && !matchingSchool { continue }
                 if let value = merged[kind]?[id] {
                     link.anchors[kind, default: [:]][id] = .init(revision: row.revision, local: AuroraCodec.fingerprint(value))
                 }
             }
         }
-        if data.lessons.contains(where: { $0.term == snapshot.mainTerm }) && data.preferences.mainTerm == "기본 학기" {
+        if (data.lessons.contains(where: { $0.term == snapshot.mainTerm }) || data.preferences.timetableOffDays?[snapshot.mainTerm] != nil)
+            && data.preferences.mainTerm == "기본 학기" {
             data.preferences.mainTerm = snapshot.mainTerm
         }
         mergeSchool(snapshot, data: &data)
@@ -373,9 +409,11 @@ enum AuroraWorkspace {
             }
         case "task":
             guard let id else { return }
+            let source = row.string("source")
             put(&data.tasks, CalixTask(id: id, title: title, section: row.string("section"), done: row.bool("done"),
                 status: row.string("status"), due: AuroraCodec.date(row.string("due")), note: row.string("note"),
-                role: row.string("role"), instructor: row.string("instructor"), auroraCategory: row.string("category"),
+                role: row.string("role"), instructor: row.string("instructor"), sourceID: source.isEmpty ? nil : source,
+                auroraCategory: row.string("category"),
                 auroraStatusColor: row.string("statusColor")))
         case "lesson":
             guard let id else { return }
@@ -384,6 +422,10 @@ enum AuroraWorkspace {
                 start: row.int("start", 540), end: row.int("end", 600), room: row.string("room"),
                 lecturer: row.string("lecturer"), online: row.bool("online"), auroraColor: row.string("color"),
                 auroraCourseID: courseID ?? previous?.auroraCourseID))
+        case "timetableTerm":
+            guard !title.isEmpty else { return }
+            let days = Set(row.string("days").split(separator: ",").compactMap { Int($0) }.filter { (1...7).contains($0) })
+            data.preferences.timetableOffDays = (data.preferences.timetableOffDays ?? [:]).merging([title: days.sorted()]) { _, latest in latest }
         case "grade":
             guard let id else { return }
             put(&data.grades, CalixGrade(id: id, title: title, term: row.string("term"), credits: row.double("credits"),
@@ -419,8 +461,9 @@ enum AuroraWorkspace {
                 data.events[index].customTitle = nil
                 data.events[index].note = ""
             }
-        case "task": data.tasks.removeAll { $0.id == id && $0.sourceID == nil }
+        case "task": data.tasks.removeAll { $0.id == id }
         case "lesson": data.lessons.removeAll { $0.id == id }
+        case "timetableTerm": data.preferences.timetableOffDays?[native] = nil
         case "grade": data.grades.removeAll { $0.id == id && $0.canvasCourseID == nil }
         case "journal": data.journals.removeAll { $0.id == id && !$0.secret }
         case "focus": data.focusHistory.removeAll { $0.id == id }
@@ -470,15 +513,10 @@ enum AuroraConnection {
     }
 
     static func sync(_ code: AuroraPairing, offer: AuroraOffer) async throws -> AuroraSnapshot {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldSetCookies = false
-        configuration.urlCache = nil
-        configuration.timeoutIntervalForRequest = 8
-        configuration.timeoutIntervalForResource = 12
-        let session = URLSession(configuration: configuration, delegate: AuroraNoRedirect(), delegateQueue: nil)
+        let session = session()
         defer { session.invalidateAndCancel() }
         let first = try await exchange("offer", offer, code, session)
-        guard first.receipt == offer.receipt else { throw AuroraLinkError.response }
+        guard first.receipt == offer.receipt, first.phase == "approval" else { throw AuroraLinkError.response }
         while code.expires > .now {
             try Task.checkCancellation()
             let reply = try await exchange("result", ["receipt": offer.receipt], code, session)
@@ -490,21 +528,44 @@ enum AuroraConnection {
         throw AuroraLinkError.expired
     }
 
+    @discardableResult
+    static func confirm(_ code: AuroraPairing, receipt: String) async -> Bool {
+        guard code.version == "3" else { return false }
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        let result = try? await exchange("received", ["receipt": receipt], code, session)
+        return result?.receipt == receipt && result?.phase == "received"
+    }
+
+    private static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.allowsCellularAccess = false
+        configuration.urlCache = nil
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 12
+        return URLSession(configuration: configuration, delegate: AuroraNoRedirect(), delegateQueue: nil)
+    }
+
     private static func exchange<Request: Encodable>(_ route: String, _ message: Request, _ code: AuroraPairing,
                                                        _ session: URLSession) async throws -> Reply {
         let payload = try JSONEncoder().encode(message)
         guard payload.count <= AuroraCodec.maximumBytes,
               let sealed = try AES.GCM.seal(payload, using: code.key,
-                  authenticating: Data("calix-vesper-v2:\(route)".utf8)).combined else { throw AuroraLinkError.response }
+                  authenticating: Data("calix-vesper-v\(code.version):\(route)".utf8)).combined else { throw AuroraLinkError.response }
         var request = URLRequest(url: code.endpoint.appendingPathComponent(route))
         request.httpMethod = "POST"
         request.httpBody = sealed
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (stream, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw AuroraLinkError.connection }
         if http.statusCode == 410 { throw AuroraLinkError.expired }
         let limit = AuroraCodec.maximumBytes + 28
-        guard http.statusCode == 200, response.expectedContentLength <= Int64(limit) else { throw AuroraLinkError.response }
+        guard http.statusCode == 200, response.mimeType == "application/octet-stream",
+              response.expectedContentLength <= Int64(limit) else { throw AuroraLinkError.response }
         var data = Data()
         if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
         for try await byte in stream {
@@ -512,7 +573,7 @@ enum AuroraConnection {
             data.append(byte)
         }
         let body = try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: code.key,
-                                    authenticating: Data("calix-vesper-v2:reply".utf8))
+                                    authenticating: Data("calix-vesper-v\(code.version):reply".utf8))
         return try JSONDecoder().decode(Reply.self, from: body)
     }
 }

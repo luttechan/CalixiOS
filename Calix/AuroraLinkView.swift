@@ -44,9 +44,12 @@ struct AuroraLinkView: View {
 
             if transfer != nil {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Aurora에서 확인 코드 승인").font(.headline)
-                    Text(receipt).font(.system(.title, design: .monospaced).weight(.semibold))
-                        .accessibilityLabel(Text("확인 코드 \(receipt)"))
+                    if receipt.isEmpty { Text("기기 인증").font(.headline) }
+                    else {
+                        Text("Aurora에서 확인 코드 승인").font(.headline)
+                        Text(receipt).font(.system(.title, design: .monospaced).weight(.semibold))
+                            .accessibilityLabel(Text("확인 코드 \(receipt)"))
+                    }
                     Button("취소", role: .cancel) { cancel() }.buttonStyle(.bordered)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -104,31 +107,42 @@ struct AuroraLinkView: View {
             let pairing = try AuroraPairing(code)
             var link = library.data.auroraLink ?? AuroraLinkState(workspace: pairing.workspace)
             guard link.workspace == pairing.workspace else { throw AuroraLinkError.workspace }
-            let baseline = AuroraWorkspace.collect(library.data, link)
-            let baselineNickname = library.data.preferences.nickname
             let id = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
-            receipt = String(id.prefix(6)).uppercased()
-            let offer = AuroraWorkspace.offer(library.data, link, receipt: id, name: "Calix Vesper")
-            code = ""
-            state = "Aurora 승인 대기"
             transfer = Task {
+                defer { transfer = nil; receipt = "" }
                 do {
+                    if library.data.preferences.lockTimetable || !library.data.grades.isEmpty {
+                        guard await library.authenticate("잠긴 시간표 또는 학점 정보를 연동합니다.") else { return }
+                    }
+                    try Task.checkCancellation()
+                    let baseline = AuroraWorkspace.collect(library.data, link)
+                    let baselineNickname = library.data.preferences.nickname
+                    let extended = pairing.version == "3"
+                    let offer = AuroraWorkspace.offer(library.data, link, receipt: id, name: "Calix Vesper", extended: extended)
+                    code = ""
+                    receipt = String(id.prefix(6)).uppercased()
+                    state = "Aurora 승인 대기"
                     let snapshot = try await AuroraConnection.sync(pairing, offer: offer)
                     try Task.checkCancellation()
                     guard library.update({ data in
-                        AuroraWorkspace.apply(snapshot, baseline: baseline, baselineNickname: baselineNickname,
+                        AuroraWorkspace.apply(snapshot, baseline: baseline, baselineNickname: baselineNickname, extended: extended,
                                               data: &data, link: &link)
                         data.auroraLink = link
                     }) else { throw AuroraLinkError.save }
+                    await AuroraConnection.confirm(pairing, receipt: id)
                     state = "연동 완료"
                 } catch is CancellationError {
                     state = "연동 대기"
+                } catch AuroraLinkError.expired {
+                    state = "연동 대기"
+                    issue = "QR이 만료되었습니다. Aurora에서 새 QR을 여세요."
+                } catch let network as URLError where network.code != .cancelled {
+                    state = "연동 대기"
+                    issue = "같은 Wi-Fi와 iPhone의 로컬 네트워크 권한을 확인하세요."
                 } catch {
                     state = "연동 대기"
                     issue = "연동하지 못했습니다. Aurora에서 QR을 다시 여세요."
                 }
-                transfer = nil
-                receipt = ""
             }
         } catch AuroraLinkError.expired {
             issue = "QR이 만료되었습니다. Aurora에서 새 QR을 여세요."

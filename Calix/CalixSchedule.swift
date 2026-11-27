@@ -69,3 +69,49 @@ struct CalendarMonth {
         markedDays = marked
     }
 }
+
+struct TimetableGridLayout {
+    static let weekdays = [2, 3, 4, 5, 6, 7, 1]
+
+    struct Slot: Identifiable {
+        let lesson: CalixLesson
+        let lane: Int
+        var lanes: Int
+        var id: UUID { lesson.id }
+    }
+
+    let days: [Int]
+    let start: Int
+    let end: Int
+    let slots: [Int: [Slot]]
+
+    init(lessons: [CalixLesson], offDays: Set<Int>) {
+        let timed = lessons.filter { !$0.online && (1...7).contains($0.weekday) &&
+            $0.start >= 0 && $0.end <= 1440 && $0.start < $0.end }
+        days = timed.contains { $0.weekday == 7 || $0.weekday == 1 } || !offDays.isDisjoint(with: [7, 1])
+            ? Self.weekdays : Array(Self.weekdays.prefix(5))
+        let visible = timed.filter { !offDays.contains($0.weekday) }
+        start = min(8 * 60, (visible.map(\.start).min() ?? 8 * 60) / 60 * 60)
+        end = max(19 * 60, ((visible.map(\.end).max() ?? 19 * 60) + 59) / 60 * 60)
+        slots = Dictionary(grouping: visible, by: \.weekday).mapValues(Self.place)
+    }
+
+    private static func place(_ lessons: [CalixLesson]) -> [Slot] {
+        var slots: [Slot] = []
+        var laneEnds: [Int] = []
+        var groupStart = 0
+        for lesson in lessons.sorted(by: { ($0.start, $0.end, $0.id.uuidString) < ($1.start, $1.end, $1.id.uuidString) }) {
+            if !laneEnds.isEmpty, laneEnds.allSatisfy({ $0 <= lesson.start }) {
+                for index in groupStart..<slots.count { slots[index].lanes = laneEnds.count }
+                laneEnds.removeAll(keepingCapacity: true)
+                groupStart = slots.count
+            }
+            let lane = laneEnds.firstIndex { $0 <= lesson.start } ?? laneEnds.count
+            if lane == laneEnds.count { laneEnds.append(lesson.end) }
+            else { laneEnds[lane] = lesson.end }
+            slots.append(Slot(lesson: lesson, lane: lane, lanes: 1))
+        }
+        for index in groupStart..<slots.count { slots[index].lanes = laneEnds.count }
+        return slots
+    }
+}
