@@ -172,6 +172,8 @@ enum CalixTheme: String, Codable, Identifiable, CaseIterable {
 
 struct CalixPreferences: Codable {
     var nickname = ""
+    var department: String?
+    var studentNumber: String?
     var homeMessage = "오늘의 학습 일정"
     var theme = CalixTheme.aurora
     var language: String?
@@ -180,8 +182,6 @@ struct CalixPreferences: Codable {
     var notify = false
     var notifyMinutes = 60
     var notifySound = true
-    var focusMessage = "집중할 시간입니다."
-    var focusDoneMessage = "집중 시간이 끝났습니다."
     var gradeScale = 4.5
     var mainTerm = "기본 학기"
     var showAttendance = false
@@ -191,6 +191,25 @@ struct CalixPreferences: Codable {
     var standardReminders: Bool? = true
     var standardDays: Int? = 1
     var timetableAppearance: [String: TimetableAppearance]?
+
+    var hasSchoolProfile: Bool {
+        guard let department, let studentNumber else { return false }
+        return Self.validSchoolProfile(department: department, studentNumber: studentNumber)
+    }
+
+    static func validSchoolProfile(department: String, studentNumber: String) -> Bool {
+        let department = department.trimmed
+        let studentNumber = studentNumber.trimmed
+        return !department.isEmpty && department.count <= 80 &&
+            (4...20).contains(studentNumber.utf8.count) && studentNumber.utf8.allSatisfy { (48...57).contains($0) }
+    }
+
+    static func cleanedNickname(_ value: String) -> String {
+        let clean = value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+        var nickname = ""
+        nickname.unicodeScalars.append(contentsOf: clean.prefix(30))
+        return nickname.trimmed
+    }
 }
 
 struct CalixData: Codable {
@@ -298,14 +317,13 @@ final class CalixLibrary {
     func startFocus(seconds: Int?) {
         let focus = CalixFocus(seconds: seconds)
         guard update({ $0.focus = focus }), let seconds else { return }
-        let title = data.preferences.focusDoneMessage
         let sound = data.preferences.notifySound
         Task {
             let center = UNUserNotificationCenter.current()
             guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true,
                   data.focus?.id == focus.id, let end = focus.endsAt, end > Date() else { return }
             let content = UNMutableNotificationContent()
-            content.title = title
+            content.title = String(localized: "뽀모도로 완료", locale: Locale(identifier: data.preferences.language ?? "ko"))
             if sound { content.sound = .default }
             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, end.timeIntervalSinceNow), repeats: false)
             try? await center.add(UNNotificationRequest(identifier: "calix.focus.\(focus.id)", content: content, trigger: trigger))

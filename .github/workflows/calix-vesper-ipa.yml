@@ -22,15 +22,19 @@ jobs:
             -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/Calix" \
             CODE_SIGNING_ALLOWED=NO build
       - name: Verify and package the device build
+        id: package
         run: |
           app="$RUNNER_TEMP/Calix/Build/Products/Release-iphoneos/Calix.app"
           plist="$app/Info.plist"
+          version=$(awk '$1 == "MARKETING_VERSION" {print $3}' Calix.xcconfig)
+          build=$(awk '$1 == "CURRENT_PROJECT_VERSION" {print $3}' Calix.xcconfig)
+          name="Calix-Vesper-$version-iPhone-Unsigned"
           plist_value() { /usr/libexec/PlistBuddy -c "Print $1" "$plist"; }
           test "$(plist_value DTPlatformName)" = iphoneos
           test "$(plist_value CFBundleIdentifier)" = io.github.luttechan.calix.ios
           test "$(plist_value CFBundleDisplayName)" = 'Calix Vesper'
-          test "$(plist_value CFBundleShortVersionString)" = '0.2.1'
-          test "$(plist_value CFBundleVersion)" = '4'
+          test "$(plist_value CFBundleShortVersionString)" = "$version"
+          test "$(plist_value CFBundleVersion)" = "$build"
           xcrun vtool -show-build "$app/Calix" | grep -E 'platform[[:space:]]+IOS$'
           xcrun lipo "$app/Calix" -verify_arch arm64
           test ! -e "$app/embedded.mobileprovision"
@@ -38,12 +42,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/package/Payload"
           ditto "$app" "$RUNNER_TEMP/package/Payload/Calix.app"
           cd "$RUNNER_TEMP/package"
-          /usr/bin/zip -qry "$RUNNER_TEMP/Calix-Vesper-0.2.1-iPhone-Unsigned.ipa" Payload
-          /usr/bin/unzip -tq "$RUNNER_TEMP/Calix-Vesper-0.2.1-iPhone-Unsigned.ipa"
+          /usr/bin/zip -qry "$RUNNER_TEMP/$name.ipa" Payload
+          /usr/bin/unzip -tq "$RUNNER_TEMP/$name.ipa"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - name: Upload the IPA
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: Calix-Vesper-0.2.1-iPhone-Unsigned
-          path: ${{ runner.temp }}/Calix-Vesper-0.2.1-iPhone-Unsigned.ipa
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ runner.temp }}/${{ steps.package.outputs.name }}.ipa
           if-no-files-found: error
           retention-days: 14

@@ -25,6 +25,14 @@
 "날짜" = "Date";
 "내 역할" = "My role";
 "닉네임" = "Nickname";
+"닉네임 (선택)" = "Nickname (optional)";
+"학과" = "Department";
+"학번" = "Student number";
+"학교 정보" = "School information";
+"시작하기" = "Get started";
+"프로필 편집" = "Edit profile";
+"사진 불러오는 중" = "Loading photo";
+"뽀모도로 완료" = "Pomodoro complete";
 "다가오는 일정" = "Upcoming events";
 "다시 시도" = "Try again";
 "다크" = "Dark";

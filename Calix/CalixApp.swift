@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct CalixApp: App {
@@ -15,7 +16,8 @@ struct CalixApp: App {
             CalixRoot(library: library)
                 .environment(\.locale, Locale(identifier: library.data.preferences.language ?? "ko"))
                 .onOpenURL { url in
-                    guard !library.locked, !library.unavailable, (try? AuroraPairing(url.absoluteString)) != nil else { return }
+                    guard !library.locked, !library.unavailable, library.data.preferences.hasSchoolProfile,
+                          (try? AuroraPairing(url.absoluteString)) != nil else { return }
                     pair = PairRoute(code: url.absoluteString)
                 }
                 .sheet(item: $pair) { route in
@@ -64,11 +66,47 @@ enum CalixScreenshot {
                 data.canvasCourses?["42"]?.term == "검증 학기" && data.moduleValidators?["42"] == "example" &&
                 roundTrip.preferences.theme == .vesper
             let aurora = try verifyAurora()
-            report = valid && aurora ? "PASS" : "Canvas or Aurora merge did not preserve expected state"
+            let profile = try verifyProfile()
+            report = valid && aurora && profile ? "PASS" : "Canvas, Aurora, or profile verification failed"
         } catch {
             report = String(describing: error)
         }
         try? report.write(to: URL.documentsDirectory.appendingPathComponent("calix-smoke.txt"), atomically: true, encoding: .utf8)
+    }
+
+    @MainActor private static func verifyProfile() throws -> Bool {
+        var data = CalixData()
+        guard !data.preferences.hasSchoolProfile,
+              !CalixPreferences.validSchoolProfile(department: "학과", studentNumber: "12A4") else { return false }
+        data.preferences.department = "예시 학과"
+        data.preferences.studentNumber = "00001234"
+        data.preferences.nickname = "Vesper Test"
+        guard data.preferences.hasSchoolProfile else { return false }
+        let encoded = try JSONEncoder().encode(data)
+        guard try JSONDecoder().decode(CalixData.self, from: encoded).preferences.studentNumber == "00001234" else { return false }
+        var link = AuroraLinkState(workspace: "fixture")
+        let offer = AuroraWorkspace.offer(data, link, receipt: "fixture", name: "Vesper")
+        let wire = String(decoding: try JSONEncoder().encode(offer), as: UTF8.self)
+        guard offer.nickname?.value == "Vesper Test", !wire.contains("00001234"), !wire.contains("department") else { return false }
+        let remote = """
+        {"records":{},"conflicts":[],"school":[],"attendance":[],"owner":"","mainTerm":"","nickname":"Aurora Test"}
+        """
+        AuroraWorkspace.apply(try JSONDecoder().decode(AuroraSnapshot.self, from: Data(remote.utf8)), baseline: [:],
+                              baselineNickname: "Vesper Test", data: &data, link: &link)
+        guard data.preferences.nickname == "Aurora Test", link.nickname?.aurora == "Aurora Test" else { return false }
+        let canvas = UIGraphicsImageRenderer(size: CGSize(width: 48, height: 48)).image { context in
+            context.cgContext.setFillColor(UIColor.systemMint.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 48, height: 48))
+        }
+        guard let png = canvas.pngData(), let thumbnail = CalixAvatar.thumbnail(png), UIImage(data: thumbnail) != nil,
+              CalixAvatar.thumbnail(Data([0, 1, 2])) == nil else { return false }
+        return TimetablePalette.all.allSatisfy { palette in
+            let surface = UIColor(white: palette.dark ? 0.20 : 0.87, alpha: 1)
+            return CalixContrast.ratio(palette.readableAccent, surface) >= 4.5
+        } && CalixTheme.allCases.allSatisfy { theme in
+            let surface = UIColor(white: theme.forcesDark ? 0.20 : 0.88, alpha: 1)
+            return CalixContrast.ratio(CalixContrast.foreground(theme.accentSource, on: surface), surface) >= 4.5
+        }
     }
 
     @MainActor private static func verifyAurora() throws -> Bool {
@@ -145,6 +183,8 @@ enum CalixScreenshot {
         }
         var result = CalixData()
         result.preferences.nickname = "Vesper Test"
+        result.preferences.department = "컴퓨터공학과"
+        result.preferences.studentNumber = "202600001"
         result.preferences.theme = page == "home-vesper" ? .vesper : .aurora
         result.canvasID = "fixture"
         result.lastSync = now

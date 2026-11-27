@@ -1,11 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct CalixRoot: View {
     let library: CalixLibrary
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var dockSelection
     #if DEBUG
     @State private var tab = CalixScreenshot.tab
     #else
@@ -36,34 +36,20 @@ struct CalixRoot: View {
                         }
                     }.buttonStyle(.borderedProminent)
                 }
+            } else if !library.data.preferences.hasSchoolProfile {
+                CalixSchoolProfileSetup(library: library)
             } else {
                 TabView(selection: $tab) {
-                    NavigationStack { CalixHome(library: library, openDeadlines: { changeTab(1) }).toolbar(.hidden, for: .tabBar) }.tag(0)
-                    NavigationStack { CalixEvents(library: library).toolbar(.hidden, for: .tabBar) }.tag(1)
-                    NavigationStack { CalixCalendar(library: library).toolbar(.hidden, for: .tabBar) }.tag(2)
-                    NavigationStack { CalixCourseList(library: library).toolbar(.hidden, for: .tabBar) }.tag(3)
-                    NavigationStack { CalixMore(library: library).toolbar(.hidden, for: .tabBar) }.tag(4)
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    HStack(spacing: 3) {
-                        dockItem(0, "홈", "house")
-                        dockItem(1, "일정", "tray.full")
-                        dockItem(2, "달력", "calendar")
-                        dockItem(3, "과목", "books.vertical")
-                        dockItem(4, "더 보기", "ellipsis")
-                    }
-                    .padding(5)
-                    .background {
-                        if reduceTransparency {
-                            RoundedRectangle(cornerRadius: 22).fill(Color(uiColor: .secondarySystemGroupedBackground))
-                        } else {
-                            RoundedRectangle(cornerRadius: 22).fill(.regularMaterial)
-                        }
-                    }
-                    .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(.primary.opacity(0.09)) }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 7)
-                    .padding(.bottom, 3)
+                    NavigationStack { CalixHome(library: library, openDeadlines: { changeTab(1) }) }
+                        .tabItem { Label("홈", systemImage: "house") }.tag(0)
+                    NavigationStack { CalixEvents(library: library) }
+                        .tabItem { Label("일정", systemImage: "tray.full") }.tag(1)
+                    NavigationStack { CalixCalendar(library: library) }
+                        .tabItem { Label("달력", systemImage: "calendar") }.tag(2)
+                    NavigationStack { CalixCourseList(library: library) }
+                        .tabItem { Label("과목", systemImage: "books.vertical") }.tag(3)
+                    NavigationStack { CalixMore(library: library) }
+                        .tabItem { Label("더 보기", systemImage: "ellipsis") }.tag(4)
                 }
             }
         }
@@ -71,7 +57,7 @@ struct CalixRoot: View {
         .background { VesperBackdrop(theme: theme).ignoresSafeArea() }
         .environment(\.vesperTheme, theme)
         .tint(theme.accent)
-        .preferredColorScheme(theme.forcesDark ? .dark : nil)
+        .preferredColorScheme(theme.forcesDark ? .dark : .light)
         .overlay {
             if phase == .background && library.data.preferences.lockOnBackground {
                 Rectangle().fill(.background).ignoresSafeArea()
@@ -89,30 +75,52 @@ struct CalixRoot: View {
         withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.78)) { tab = value }
     }
 
-    private func dockItem(_ index: Int, _ title: LocalizedStringKey, _ symbol: String) -> some View {
-        Button { changeTab(index) } label: {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.system(size: 17, weight: tab == index ? .semibold : .regular))
-                Text(title).font(.caption2.weight(tab == index ? .semibold : .medium)).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, minHeight: 46)
-            .padding(.horizontal, 3)
-            .contentShape(Rectangle())
-            .foregroundStyle(tab == index ? library.data.preferences.theme.accent : .secondary)
-            .background {
-                if tab == index {
-                    if reduceMotion {
-                        RoundedRectangle(cornerRadius: 17).fill(library.data.preferences.theme.accent.opacity(0.14))
-                    } else {
-                        RoundedRectangle(cornerRadius: 17).fill(library.data.preferences.theme.accent.opacity(0.14))
-                            .matchedGeometryEffect(id: "active-tab", in: dockSelection)
-                    }
+}
+
+private struct CalixSchoolProfileSetup: View {
+    let library: CalixLibrary
+    @State private var department: String
+    @State private var studentNumber: String
+    @State private var nickname: String
+    @FocusState private var editing: Field?
+    private enum Field { case department, studentNumber, nickname }
+
+    init(library: CalixLibrary) {
+        self.library = library
+        _department = State(initialValue: library.data.preferences.department ?? "")
+        _studentNumber = State(initialValue: library.data.preferences.studentNumber ?? "")
+        _nickname = State(initialValue: library.data.preferences.nickname)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("학교 정보") {
+                    TextField("학과", text: $department).focused($editing, equals: .department)
+                        .submitLabel(.next).onSubmit { editing = .studentNumber }
+                    TextField("학번", text: $studentNumber).keyboardType(.asciiCapableNumberPad)
+                        .focused($editing, equals: .studentNumber)
                 }
+                Section("프로필") {
+                    TextField("닉네임 (선택)", text: $nickname).focused($editing, equals: .nickname)
+                }
+                Button {
+                    library.update {
+                        $0.preferences.department = department.trimmed
+                        $0.preferences.studentNumber = studentNumber.trimmed
+                        $0.preferences.nickname = CalixPreferences.cleanedNickname(nickname)
+                    }
+                } label: {
+                    Text("시작하기").frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.borderedProminent)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .disabled(!CalixPreferences.validSchoolProfile(department: department, studentNumber: studentNumber))
             }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Calix Vesper")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(title))
-        .accessibilityAddTraits(tab == index ? .isSelected : [])
     }
 }
 
@@ -125,8 +133,13 @@ private extension EnvironmentValues {
 }
 
 extension CalixTheme {
+    var accentSource: UIColor {
+        UIColor(hue: hue, saturation: forcesDark ? 0.32 : 0.57, brightness: forcesDark ? 0.94 : 0.57, alpha: 1)
+    }
+
     var accent: Color {
-        Color(hue: hue, saturation: forcesDark ? 0.32 : 0.57, brightness: forcesDark ? 0.94 : 0.57)
+        let surface = UIColor(white: forcesDark ? 0.20 : 0.88, alpha: 1)
+        return Color(uiColor: CalixContrast.foreground(accentSource, on: surface))
     }
 
     var swatch: LinearGradient {
@@ -134,6 +147,42 @@ extension CalixTheme {
             Color(hue: hue, saturation: 0.50, brightness: 0.76),
             Color(hue: secondaryHue, saturation: 0.42, brightness: 0.49),
         ], startPoint: .bottomLeading, endPoint: .topTrailing)
+    }
+}
+
+enum CalixContrast {
+    static func ratio(_ first: UIColor, _ second: UIColor) -> Double {
+        func luminance(_ color: UIColor) -> Double {
+            let values = channels(color).map { value in
+                value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2]
+        }
+        let left = luminance(first), right = luminance(second)
+        return (max(left, right) + 0.05) / (min(left, right) + 0.05)
+    }
+
+    static func foreground(_ color: UIColor, on surface: UIColor, minimum: Double = 4.5) -> UIColor {
+        guard ratio(color, surface) < minimum else { return color }
+        let target: Double = ratio(.white, surface) > ratio(.black, surface) ? 1 : 0
+        let source = channels(color)
+        func mix(_ weight: Double) -> UIColor {
+            let values = source.map { $0 + (target - $0) * weight }
+            return UIColor(red: values[0], green: values[1], blue: values[2], alpha: 1)
+        }
+        var low = 0.0, high = 1.0
+        for _ in 0..<10 {
+            let middle = (low + high) / 2
+            if ratio(mix(middle), surface) < minimum { low = middle }
+            else { high = middle }
+        }
+        return mix(high)
+    }
+
+    private static func channels(_ color: UIColor) -> [Double] {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 1
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return [Double(red), Double(green), Double(blue)]
     }
 }
 

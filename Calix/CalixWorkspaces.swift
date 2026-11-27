@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct CalixChecklist: View {
     let library: CalixLibrary
@@ -202,14 +203,16 @@ struct TimetableAppearance: Codable, Equatable {
 
     func color(_ lesson: CalixLesson, slot: Int) -> Color {
         let fallback = palette.swatch(slot)
+        let color: UIColor
         switch mode {
-        case .auto: return fallback
-        case .manual: return TimetablePalette.hex(lesson.auroraColor) ?? fallback
+        case .auto: color = fallback
+        case .manual: color = TimetablePalette.hex(lesson.auroraColor) ?? fallback
         case .custom:
             let key = lesson.auroraCourseID.map { "course:" + String($0) } ?? "title:" + String(lesson.title.trimmed.prefix(200))
-            return TimetablePalette.hex(colors[key]) ??
+            color = TimetablePalette.hex(colors[key]) ??
                 (slots.indices.contains(slot) ? TimetablePalette.hex(slots[slot]) : nil) ?? fallback
         }
+        return Color(uiColor: CalixContrast.foreground(color, on: palette.rowSurface, minimum: 3))
     }
 }
 
@@ -260,19 +263,26 @@ struct TimetablePalette {
         }
     }
 
-    static func hex(_ text: String?) -> Color? {
-        guard let text, text.count == 7, text.first == "#", let value = UInt32(text.dropFirst(), radix: 16) else { return nil }
-        return Color(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255,
-                     blue: Double(value & 255) / 255)
+    var rowSurface: UIColor { UIColor(white: dark ? 0.16 : 1, alpha: 1) }
+
+    var readableAccent: UIColor {
+        let background = UIColor(white: dark ? 0.20 : 0.87, alpha: 1)
+        return CalixContrast.foreground(Self.hex(accent) ?? .label, on: background)
     }
 
-    func swatch(_ index: Int) -> Color {
+    static func hex(_ text: String?) -> UIColor? {
+        guard let text, text.count == 7, text.first == "#", let value = UInt32(text.dropFirst(), radix: 16) else { return nil }
+        return UIColor(red: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255,
+                       blue: CGFloat(value & 255) / 255, alpha: 1)
+    }
+
+    func swatch(_ index: Int) -> UIColor {
         let hue = hues[index % hues.count]
         func channel(_ offset: Double) -> Double {
             let wave = (offset + hue / 30).truncatingRemainder(dividingBy: 12)
             return (dark ? 0.68 : 0.43) - (dark ? 0.22 : 0.19) * max(-1, min(wave - 3, 9 - wave, 1))
         }
-        return Color(red: channel(0), green: channel(8), blue: channel(4))
+        return UIColor(red: channel(0), green: channel(8), blue: channel(4), alpha: 1)
     }
 }
 
@@ -325,11 +335,17 @@ struct CalixTimetable: View {
                     }.pickerStyle(.segmented)
                     Section("\(days[day - 1])요일") {
                         if active.isEmpty { Text("등록된 수업이 없습니다.").foregroundStyle(.secondary) }
-                        ForEach(active) { item in row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0)) }
+                        ForEach(active) { item in
+                            row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0))
+                                .listRowBackground(Color(uiColor: palette.rowSurface))
+                        }
                     }
                     Section("비대면") {
                         if online.isEmpty { Text("등록된 비대면 수업이 없습니다.").foregroundStyle(.secondary) }
-                        ForEach(online) { item in row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0)) }
+                        ForEach(online) { item in
+                            row(item, color: appearance.color(item, slot: courseSlots[courseKey(item)] ?? 0))
+                                .listRowBackground(Color(uiColor: palette.rowSurface))
+                        }
                     }
                     DisclosureGroup("공강 찾기", isExpanded: $showFree) {
                         let intervals = freeSlots(active)
@@ -342,9 +358,9 @@ struct CalixTimetable: View {
                     }
                 }
                 .scrollContentBackground(.hidden)
-                .background(TimetablePalette.hex(palette.surface) ?? Color(uiColor: .systemGroupedBackground))
+                .background(Color(uiColor: TimetablePalette.hex(palette.surface) ?? .systemGroupedBackground))
                 .environment(\.colorScheme, palette.dark ? .dark : .light)
-                .tint(TimetablePalette.hex(palette.accent))
+                .tint(Color(uiColor: palette.readableAccent))
                 .toolbar {
                     Button { showTheme = true } label: { Label("시간표 테마", systemImage: "paintpalette") }
                     Button { editing = CalixLesson(term: selected, weekday: day) } label: { Label("수업 추가", systemImage: "plus") }
@@ -439,8 +455,9 @@ struct CalixTimetable: View {
                 if let style {
                     HStack(spacing: 4) {
                         ForEach(0..<3) { index in
-                            Circle().fill(TimetablePalette.hex(style.slots.indices.contains(index) ? style.slots[index] : nil)
-                                          ?? style.palette.swatch(index)).frame(width: 13, height: 13)
+                            let swatch = TimetablePalette.hex(style.slots.indices.contains(index) ? style.slots[index] : nil)
+                                ?? style.palette.swatch(index)
+                            Circle().fill(Color(uiColor: swatch)).frame(width: 13, height: 13)
                         }
                     }
                     .accessibilityHidden(true)
@@ -463,6 +480,7 @@ struct CalixTimetable: View {
                 }
             }
         }
+        .buttonStyle(.plain)
         .swipeActions { Button("삭제", role: .destructive) { library.update { $0.lessons.removeAll { $0.id == item.id } } } }
     }
 

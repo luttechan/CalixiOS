@@ -105,6 +105,7 @@ struct AuroraLinkView: View {
             var link = library.data.auroraLink ?? AuroraLinkState(workspace: pairing.workspace)
             guard link.workspace == pairing.workspace else { throw AuroraLinkError.workspace }
             let baseline = AuroraWorkspace.collect(library.data, link)
+            let baselineNickname = library.data.preferences.nickname
             let id = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
             receipt = String(id.prefix(6)).uppercased()
             let offer = AuroraWorkspace.offer(library.data, link, receipt: id, name: "Calix Vesper")
@@ -115,7 +116,8 @@ struct AuroraLinkView: View {
                     let snapshot = try await AuroraConnection.sync(pairing, offer: offer)
                     try Task.checkCancellation()
                     guard library.update({ data in
-                        AuroraWorkspace.apply(snapshot, baseline: baseline, data: &data, link: &link)
+                        AuroraWorkspace.apply(snapshot, baseline: baseline, baselineNickname: baselineNickname,
+                                              data: &data, link: &link)
                         data.auroraLink = link
                     }) else { throw AuroraLinkError.save }
                     state = "연동 완료"

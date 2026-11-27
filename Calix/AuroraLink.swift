@@ -103,11 +103,16 @@ struct AuroraLinkState: Codable {
         let revision: String
         let local: String
     }
+    struct NicknameAnchor: Codable {
+        let aurora: String
+        let vesper: String
+    }
     var workspace: String
     var anchors: [String: [String: Anchor]] = [:]
     var native: [String: [String: String]] = [:]
     var lastSync: Date?
     var conflicts = 0
+    var nickname: NicknameAnchor?
 }
 
 struct AuroraSnapshot: Decodable {
@@ -131,6 +136,7 @@ struct AuroraSnapshot: Decodable {
     let attendance: [Attendance]
     let owner, mainTerm: String
     let timetableColors: AuroraTimetableColors?
+    let nickname: String?
 }
 
 struct AuroraOffer: Encodable {
@@ -138,9 +144,14 @@ struct AuroraOffer: Encodable {
         let base: String?
         let value: AuroraRecord?
     }
+    struct Nickname: Encodable {
+        let value: String
+        let base: String?
+    }
     let receipt, name: String
     let changes: [String: [String: Change]]
     var schoolOwner: String? = nil
+    var nickname: Nickname? = nil
 }
 
 enum AuroraCodec {
@@ -267,16 +278,29 @@ enum AuroraWorkspace {
                 changes[kind, default: [:]][id] = .init(base: original.revision, value: nil)
             }
         }
+        let nickname = CalixPreferences.cleanedNickname(data.preferences.nickname)
+        let edited = nickname != (link.nickname?.vesper ?? "")
         return AuroraOffer(receipt: receipt, name: name, changes: changes,
-                           schoolOwner: data.canvasID ?? data.auroraSchoolOwner)
+                           schoolOwner: data.canvasID ?? data.auroraSchoolOwner,
+                           nickname: edited ? .init(value: nickname, base: link.nickname?.aurora) : nil)
     }
 
-    static func apply(_ snapshot: AuroraSnapshot, baseline: Entries, data: inout CalixData, link: inout AuroraLinkState) {
+    static func apply(_ snapshot: AuroraSnapshot, baseline: Entries, baselineNickname: String? = nil,
+                      data: inout CalixData, link: inout AuroraLinkState) {
         let before = collect(data, link)
         mergeSchool(snapshot, data: &data)
         if let colors = snapshot.timetableColors { data.auroraTimetableColors = colors }
         let matchingSchool = !snapshot.owner.isEmpty && (data.canvasID ?? data.auroraSchoolOwner) == snapshot.owner
         var conflicts = Set(snapshot.conflicts)
+        if let nickname = snapshot.nickname, !conflicts.contains("profile/nickname") {
+            if let baselineNickname, data.preferences.nickname != baselineNickname {
+                conflicts.insert("profile/nickname")
+            } else {
+                let local = CalixPreferences.cleanedNickname(nickname)
+                data.preferences.nickname = local
+                link.nickname = .init(aurora: nickname, vesper: local)
+            }
+        }
         for kind in kinds {
             if kind == "canvasEdit" && !matchingSchool { continue }
             guard let rows = snapshot.records[kind] else { continue }

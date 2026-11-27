@@ -1,3 +1,4 @@
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -273,7 +274,6 @@ private struct CalixStudy: View {
             List {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(library.data.preferences.focusMessage)
                         Text(String(format: "%02d:%02d", remaining / 60, remaining % 60))
                             .font(.system(size: 48, weight: .semibold, design: .rounded)).monospacedDigit()
                         if focus != nil {
@@ -315,20 +315,32 @@ private struct CalixSettings: View {
     var body: some View {
         Form {
             Section("프로필") {
-                HStack(spacing: 16) {
-                    Group {
-                        if let bytes = library.data.avatar, let photo = UIImage(data: bytes) {
-                            Image(uiImage: photo).resizable().scaledToFill()
-                        } else {
-                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().foregroundStyle(.tint)
+                Button { editingProfile = true } label: {
+                    HStack(spacing: 16) {
+                        Group {
+                            if let bytes = library.data.avatar, let photo = UIImage(data: bytes) {
+                                Image(uiImage: photo).resizable().scaledToFill()
+                            } else {
+                                Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().foregroundStyle(.tint)
+                            }
+                        }.frame(width: 56, height: 56).clipShape(Circle()).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 3) {
+                            if !library.data.preferences.nickname.isEmpty { Text(library.data.preferences.nickname).foregroundStyle(.primary) }
+                            Text("프로필 편집").foregroundStyle(.secondary)
                         }
-                    }.frame(width: 56, height: 56).clipShape(Circle())
-                    VStack(alignment: .leading) {
-                        Button(library.data.preferences.nickname.isEmpty ? "프로필 편집" : library.data.preferences.nickname) { editingProfile = true }
-                        PhotosPicker(selection: $avatar, matching: .images) { Text("사진 변경").font(.subheadline) }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                     }
                 }
-                if library.data.avatar != nil { Button("사진 지우기") { library.update { $0.avatar = nil } } }
+                .buttonStyle(.plain)
+                PhotosPicker(selection: $avatar, matching: .images, preferredItemEncoding: .compatible) {
+                    Label("사진 변경", systemImage: "photo")
+                }
+                if avatar != nil { ProgressView("사진 불러오는 중") }
+                if library.data.avatar != nil {
+                    Button("사진 지우기", role: .destructive) { library.update { $0.avatar = nil } }
+                        .disabled(avatar != nil)
+                }
             }
             Section("화면") {
                 Picker("언어", selection: optionalSetting(\.language, default: "ko")) {
@@ -398,17 +410,20 @@ private struct CalixSettings: View {
         .navigationTitle("설정")
         .task(id: avatar) { await applyAvatar() }
         .sheet(isPresented: $editingProfile) {
-            EditForm(title: "프로필", initial: library.data.preferences, valid: { !$0.homeMessage.trimmed.isEmpty }) { item in
+            EditForm(title: "프로필", initial: library.data.preferences, valid: {
+                !$0.homeMessage.trimmed.isEmpty &&
+                    CalixPreferences.validSchoolProfile(department: $0.department ?? "", studentNumber: $0.studentNumber ?? "")
+            }) { item in
                 TextField("닉네임", text: item.nickname)
                 TextField("홈 문구", text: item.homeMessage)
-                TextField("집중 시작 문구", text: item.focusMessage)
-                TextField("집중 완료 문구", text: item.focusDoneMessage)
+                TextField("학과", text: profileText(item.department))
+                TextField("학번", text: profileText(item.studentNumber)).keyboardType(.asciiCapableNumberPad)
             } save: { prefs in
                 library.update {
-                    $0.preferences.nickname = String(prefs.nickname.trimmed.prefix(60))
+                    $0.preferences.nickname = CalixPreferences.cleanedNickname(prefs.nickname)
                     $0.preferences.homeMessage = String(prefs.homeMessage.trimmed.prefix(120))
-                    $0.preferences.focusMessage = String(prefs.focusMessage.trimmed.prefix(120))
-                    $0.preferences.focusDoneMessage = String(prefs.focusDoneMessage.trimmed.prefix(120))
+                    $0.preferences.department = prefs.department?.trimmed
+                    $0.preferences.studentNumber = prefs.studentNumber?.trimmed
                 }
             }
         }
@@ -456,17 +471,21 @@ private struct CalixSettings: View {
         })
     }
 
+    private func profileText(_ binding: Binding<String?>) -> Binding<String> {
+        Binding(get: { binding.wrappedValue ?? "" }, set: { binding.wrappedValue = $0 })
+    }
+
     private func applyAvatar() async {
         guard let item = avatar else { return }
-        guard let bytes = try? await item.loadTransferable(type: Data.self), bytes.count < 20_000_000,
-              let source = UIImage(data: bytes), source.size.width > 0, source.size.height > 0 else {
-            library.issue = "사진을 읽지 못했습니다."
+        defer { if avatar == item && !Task.isCancelled { avatar = nil } }
+        guard let bytes = try? await item.loadTransferable(type: Data.self), !Task.isCancelled else {
+            if !Task.isCancelled && avatar == item { library.issue = "사진을 읽지 못했습니다." }
             return
         }
-        let ratio = min(1, 320 / max(source.size.width, source.size.height))
-        let size = CGSize(width: source.size.width * ratio, height: source.size.height * ratio)
-        let image = UIGraphicsImageRenderer(size: size).image { _ in source.draw(in: CGRect(origin: .zero, size: size)) }
-        library.update { $0.avatar = image.jpegData(compressionQuality: 0.85) }
+        let photo = await Task.detached(priority: .userInitiated) { CalixAvatar.thumbnail(bytes) }.value
+        guard !Task.isCancelled, avatar == item else { return }
+        guard let photo else { library.issue = "사진을 읽지 못했습니다."; return }
+        library.update { $0.avatar = photo }
     }
 
     private func exportBackup() {
@@ -481,6 +500,8 @@ private struct CalixSettings: View {
             exported.moduleValidators = nil
             exported.lastSync = nil
             exported.focus = nil
+            exported.preferences.department = nil
+            exported.preferences.studentNumber = nil
             backupDocument = try CalixBackup(contents: JSONEncoder().encode(exported))
             backupExport = true
         } catch { library.issue = "백업을 준비하지 못했습니다." }
@@ -515,17 +536,33 @@ private struct CalixSettings: View {
                         for item in imported.grades { data.grades.replace(item) }
                         data.gradeScales = (data.gradeScales ?? [:]).merging(imported.gradeScales ?? [:]) { _, latest in latest }
                     } else {
-                        data.preferences.nickname = imported.preferences.nickname
+                        data.preferences.nickname = CalixPreferences.cleanedNickname(imported.preferences.nickname)
                         data.preferences.homeMessage = imported.preferences.homeMessage
                         data.preferences.theme = imported.preferences.theme
-                        data.preferences.focusMessage = imported.preferences.focusMessage
-                        data.preferences.focusDoneMessage = imported.preferences.focusDoneMessage
                         if let avatar = imported.avatar, avatar.count < 1_000_000, UIImage(data: avatar) != nil { data.avatar = avatar }
                     }
                 }) { library.issue = "기기 데이터에 백업을 병합했습니다." }
             }
         } catch DesktopBackup.Failure.encrypted { library.issue = "암호로 보호된 Windows 백업은 이 버전에서 열 수 없습니다." }
         catch { library.issue = "Calix 백업을 읽지 못했습니다." }
+    }
+}
+
+enum CalixAvatar {
+    static func thumbnail(_ data: Data) -> Data? {
+        guard !data.isEmpty, data.count <= 50 * 1024 * 1024,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 512,
+              ] as CFDictionary) else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.86] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 }
 
