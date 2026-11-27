@@ -203,6 +203,13 @@ struct CalixTimetable: View {
     @State private var showFree = false
     private let days = ["일", "월", "화", "수", "목", "금", "토"]
 
+    init(library: CalixLibrary) {
+        self.library = library
+        #if DEBUG
+        if CalixScreenshot.page == "timetable" { _day = State(initialValue: 2) }
+        #endif
+    }
+
     var body: some View {
         let selected = term ?? library.data.preferences.mainTerm
         let terms = Set(library.data.lessons.map(\.term) + [selected, library.data.preferences.mainTerm]).sorted()
@@ -327,6 +334,13 @@ struct CalixGrades: View {
     @State private var editing: CalixGrade?
     @State private var search = ""
     @State private var showReset = false
+
+    init(library: CalixLibrary) {
+        self.library = library
+        #if DEBUG
+        if CalixScreenshot.page == "grades" { _authorized = State(initialValue: true) }
+        #endif
+    }
 
     var body: some View {
         let selected = term ?? library.data.preferences.mainTerm

@@ -35,7 +35,7 @@ struct AuroraLinkView: View {
                         .font(.footnote)
                 }
                 if let count = library.data.auroraLink?.conflicts, count > 0 {
-                    Label("양쪽에서 수정된 항목 (count)개를 각각 보존했습니다.", systemImage: "exclamationmark.circle")
+                    Label("양쪽에서 수정된 항목 \(count)개를 각각 보존했습니다.", systemImage: "exclamationmark.circle")
                         .font(.footnote)
                 }
             }
@@ -46,7 +46,7 @@ struct AuroraLinkView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Aurora에서 확인 코드 승인").font(.headline)
                     Text(receipt).font(.system(.title, design: .monospaced).weight(.semibold))
-                        .accessibilityLabel(Text("확인 코드 (receipt)"))
+                        .accessibilityLabel(Text("확인 코드 \(receipt)"))
                     Button("취소", role: .cancel) { cancel() }.buttonStyle(.bordered)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
