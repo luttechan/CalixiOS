@@ -2,20 +2,35 @@ import SwiftUI
 
 @main
 struct CalixApp: App {
+    private struct PairRoute: Identifiable {
+        let id = UUID()
+        let code: String
+    }
     @State private var library = CalixLibrary()
+    @State private var pair: PairRoute?
     @Environment(\.scenePhase) private var phase
 
     var body: some Scene {
         WindowGroup {
             CalixRoot(library: library)
                 .environment(\.locale, Locale(identifier: library.data.preferences.language ?? "ko"))
+                .onOpenURL { url in
+                    guard !library.locked, !library.unavailable, (try? AuroraPairing(url.absoluteString)) != nil else { return }
+                    pair = PairRoute(code: url.absoluteString)
+                }
+                .sheet(item: $pair) { route in
+                    NavigationStack {
+                        AuroraLinkView(library: library, initialCode: route.code)
+                            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { pair = nil } } }
+                    }
+                }
                 .task {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-calix-smoke") { CalixScreenshot.runSmokeCheck() }
                     #endif
                 }
                 .onChange(of: phase) { _, newPhase in
-                    if newPhase == .background { library.backgrounded() }
+                    if newPhase == .background { library.backgrounded(); pair = nil }
                     if newPhase == .active { library.finishFocusIfNeeded() }
                 }
         }
@@ -45,11 +60,33 @@ enum CalixScreenshot {
                 assignment?.done == false && assignment?.syncStatus == "graded" &&
                 data.canvasCourses?["42"]?.term == "검증 학기" && data.moduleValidators?["42"] == "example" &&
                 roundTrip.preferences.theme == .vesper
-            report = valid ? "PASS" : "Canvas merge did not preserve expected state"
+            let aurora = try verifyAurora()
+            report = valid && aurora ? "PASS" : "Canvas or Aurora merge did not preserve expected state"
         } catch {
             report = String(describing: error)
         }
         try? report.write(to: URL.documentsDirectory.appendingPathComponent("calix-smoke.txt"), atomically: true, encoding: .utf8)
+    }
+
+    @MainActor private static func verifyAurora() throws -> Bool {
+        let expiry = Int(Date().timeIntervalSince1970) + 90
+        let validCode = "calix-vesper://pair?v=2&host=192.168.1.8&port=31410&computer=" +
+            "11111111111111111111111111111111&expires=\(expiry)&key=" + String(repeating: "A", count: 43)
+        let pair = try AuroraPairing(validCode)
+        guard (try? AuroraPairing(validCode.replacingOccurrences(of: "192.168.1.8", with: "8.8.8.8"))) == nil else { return false }
+        var data = CalixData()
+        data.journals = [CalixJournal(title: "Protected", secret: true)]
+        var link = AuroraLinkState(workspace: pair.workspace)
+        let smoke = """
+        {"records":{"event":{"manual:sample":{"revision":"111","value":{"title":"Aurora","start":"2026-11-27T00:00:00+09:00","due":"2026-11-29T21:30:00+09:00","done":false,"starred":true}}}},"conflicts":[],"school":[],"attendance":[],"owner":"","mainTerm":"2026학년도 2학기"}
+        """
+        let snapshot = try JSONDecoder().decode(AuroraSnapshot.self, from: Data(smoke.utf8))
+        AuroraWorkspace.apply(snapshot, baseline: [:], data: &data, link: &link)
+        guard data.events.first?.starts != nil, data.events.first?.starred == true,
+              AuroraWorkspace.offer(data, link, receipt: "none", name: "Fixture").changes.isEmpty else { return false }
+        data.events[0].title = "Edited on Vesper"
+        let offer = AuroraWorkspace.offer(data, link, receipt: "none", name: "Fixture")
+        return offer.changes["event"]?["manual:sample"]?.base == "111" && offer.changes["journal"] == nil
     }
 
     static var page: String? {

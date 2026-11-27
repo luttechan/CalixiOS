@@ -509,9 +509,19 @@ struct EventEditor: View {
                 if !draft.remote {
                     TextField("과목", text: $draft.course)
                     Picker("유형", selection: $draft.kind) { ForEach(EventKind.allCases) { Text($0.rawValue).tag($0) } }
-                    Toggle("마감 설정", isOn: Binding(get: { draft.due != nil }, set: { draft.due = $0 ? .now : nil }))
+                    Toggle("마감 설정", isOn: Binding(get: { draft.due != nil }, set: {
+                        draft.due = $0 ? .now : nil
+                        if !$0 { draft.starts = nil }
+                    }))
                     if draft.due != nil {
                         DatePicker("마감", selection: Binding(get: { draft.due ?? .now }, set: { draft.due = $0 }))
+                        Toggle("시작일 설정", isOn: Binding(get: { draft.starts != nil }, set: {
+                            draft.starts = $0 ? Calendar.current.startOfDay(for: draft.due ?? .now) : nil
+                        }))
+                        if let due = draft.due, draft.starts != nil {
+                            DatePicker("시작일", selection: Binding(get: { draft.starts ?? due }, set: { draft.starts = $0 }),
+                                       in: ...due, displayedComponents: .date)
+                        }
                         if !library.data.events.contains(where: { $0.id == draft.id }) {
                             Stepper("반복 횟수 \(copies)회", value: $copies, in: 1...52)
                             if copies > 1 {
@@ -551,12 +561,14 @@ struct EventEditor: View {
                                 var item = draft
                                 item.id = index == 0 ? draft.id : UUID().uuidString
                                 item.due = due
+                                item.starts = draft.starts.flatMap { Calendar.current.date(byAdding: .day, value: index * interval, to: $0) }
                                 item.seriesID = series
                                 data.events.append(item)
                             }
                         }
                     }) { dismiss() }
-                }.disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                           (draft.starts ?? .distantPast) > (draft.due ?? .distantFuture))
             }
         }
     }
@@ -605,7 +617,12 @@ struct CalixCalendar: View {
 
     var body: some View {
         let key = CalixData.dayKey(date)
-        let events = library.data.events.filter { $0.due.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false }.ordered
+        let events = library.data.events.filter { item in
+            guard let due = item.due else { return false }
+            let end = CalixData.dayKey(due)
+            let start = item.starts.map(CalixData.dayKey) ?? end
+            return start <= key && key <= end
+        }.ordered
         VesperPage {
             DatePicker("날짜", selection: $date, displayedComponents: .date)
                 .datePickerStyle(.graphical)
@@ -614,7 +631,7 @@ struct CalixCalendar: View {
             VesperSection(title: LocalizedStringKey(date.formatted(.dateTime.month().day().weekday().locale(locale)))) {
                 if let name = library.data.holidays[key] { Label(name, systemImage: "calendar.badge.checkmark") }
                 if let name = library.data.offDays[key] { Label(name, systemImage: "moon.zzz") }
-                if events.isEmpty { Text("선택한 날짜에 마감할 일정이 없습니다.").foregroundStyle(.secondary) }
+                if events.isEmpty { Text("일정 없음").foregroundStyle(.secondary) }
                 ForEach(events) { EventLink(id: $0.id, library: library, card: true) }
             }
             Button("휴일 이름 편집") { holiday = library.data.holidays[key] ?? ""; editingHoliday = true }

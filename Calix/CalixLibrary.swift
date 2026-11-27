@@ -21,6 +21,9 @@ struct CalixEvent: Codable, Identifiable, Equatable {
     var seriesID: String? = nil
     var customTitle: String? = nil
     var syncStatus: String? = nil
+    var starts: Date? = nil
+    var auroraCategory: String? = nil
+    var auroraColor: String? = nil
 }
 
 struct CanvasCourse: Codable, Identifiable {
@@ -54,6 +57,8 @@ struct CalixTask: Codable, Identifiable {
     var role: String?
     var instructor: String?
     var sourceID: String?
+    var auroraCategory: String?
+    var auroraStatusColor: String?
 }
 
 struct CalixTaskStatus: Codable, Identifiable {
@@ -81,6 +86,7 @@ struct CalixLesson: Codable, Identifiable {
     var room = ""
     var lecturer = ""
     var online = false
+    var auroraColor: String?
 }
 
 struct CalixGrade: Codable, Identifiable {
@@ -205,6 +211,8 @@ struct CalixData: Codable {
     var moduleValidators: [String: String]?
     var canvasCourses: [String: CanvasCourse]?
     var lastSync: Date?
+    var auroraLink: AuroraLinkState?
+    var auroraSchoolOwner: String?
 
     static func dayKey(_ date: Date) -> String {
         let values = Calendar.current.dateComponents([.year, .month, .day], from: date)

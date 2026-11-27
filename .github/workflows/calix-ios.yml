@@ -2,7 +2,7 @@ name: Calix Vesper simulator
 
 on:
   push:
-    branches: [main, codex/vesper]
+    branches: [main, codex/vesper, codex/vesper-next]
   pull_request:
     branches: [main]
   workflow_dispatch:

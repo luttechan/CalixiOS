@@ -23,6 +23,7 @@ struct CalixMore: View {
                 destination("비밀 일기", "lock.doc") { CalixDiary(library: library, secret: true) }
             }
             VesperSection(title: "Calix") {
+                destination("Aurora 연동", "laptopcomputer.and.iphone") { AuroraLinkView(library: library) }
                 destination("설정", "gearshape") { CalixSettings(library: library) }
                 Button { library.locked = true } label: { Label("지금 잠금", systemImage: "lock") }
                     .disabled(!library.data.preferences.lockOnBackground)
