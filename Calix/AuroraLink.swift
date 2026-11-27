@@ -463,7 +463,7 @@ enum AuroraConnection {
         let payload = try JSONEncoder().encode(message)
         guard payload.count <= AuroraCodec.maximumBytes,
               let sealed = try AES.GCM.seal(payload, using: code.key,
-                  authenticating: Data("calix-vesper-v2:(route)".utf8)).combined else { throw AuroraLinkError.response }
+                  authenticating: Data("calix-vesper-v2:\(route)".utf8)).combined else { throw AuroraLinkError.response }
         var request = URLRequest(url: code.endpoint.appendingPathComponent(route))
         request.httpMethod = "POST"
         request.httpBody = sealed

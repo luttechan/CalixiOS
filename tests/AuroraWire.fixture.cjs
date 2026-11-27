@@ -46,7 +46,8 @@ const server = createServer(async (request, response) => {
     const bytes = Buffer.concat([nonce, cipher.update(JSON.stringify(reply)), cipher.final(), cipher.getAuthTag()]);
     response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": bytes.length });
     response.end(bytes);
-  } catch {
+  } catch (error) {
+    console.error(`Aurora fixture rejected a request: ${error.code ?? error.name}`);
     response.writeHead(400);
     response.end();
   }
