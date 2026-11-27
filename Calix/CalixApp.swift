@@ -80,7 +80,8 @@ enum CalixScreenshot {
             let estimate = measured.remainingSeconds(at: 60) == 15 && measured.remainingSeconds(at: 72) == 5 &&
                 measured.remainingSeconds(at: 75) == nil && saved.remainingSeconds(at: 72) == nil
             let timetable = verifyTimetableGrid()
-            report = valid && aurora && profile && deadlines && countdown && calendar && estimate && timetable
+            let actionsReadable = CalixTheme.allCases.allSatisfy { CalixContrast.ratio($0.actionInk, $0.readableAccent) >= 4.5 }
+            report = valid && aurora && profile && deadlines && countdown && calendar && estimate && timetable && actionsReadable
                 ? "PASS" : "Canvas, Aurora, profile, calendar, or countdown verification failed"
         } catch {
             report = String(describing: error)

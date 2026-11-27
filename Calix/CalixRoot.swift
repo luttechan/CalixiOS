@@ -21,7 +21,7 @@ struct CalixRoot: View {
                 } description: {
                     Text("저장한 데이터를 열지 못했습니다.")
                 } actions: {
-                    Button("다시 시도") { library.reload() }.buttonStyle(.borderedProminent)
+                    Button("다시 시도") { library.reload() }.buttonStyle(VesperPrimaryAction())
                 }
             } else if library.locked {
                 ContentUnavailableView {
@@ -34,7 +34,7 @@ struct CalixRoot: View {
                                 library.finishFocusIfNeeded()
                             }
                         }
-                    }.buttonStyle(.borderedProminent)
+                    }.buttonStyle(VesperPrimaryAction())
                 }
             } else if !library.data.preferences.hasSchoolProfile {
                 CalixSchoolProfileSetup(library: library)
@@ -113,7 +113,7 @@ private struct CalixSchoolProfileSetup: View {
                 } label: {
                     Text("시작하기").frame(maxWidth: .infinity, minHeight: 32)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VesperPrimaryAction())
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
                 .disabled(!CalixPreferences.validSchoolProfile(department: department, studentNumber: studentNumber))
@@ -137,9 +137,15 @@ extension CalixTheme {
         UIColor(hue: hue, saturation: forcesDark ? 0.32 : 0.57, brightness: forcesDark ? 0.94 : 0.57, alpha: 1)
     }
 
-    var accent: Color {
+    var readableAccent: UIColor {
         let surface = UIColor(white: forcesDark ? 0.20 : 0.88, alpha: 1)
-        return Color(uiColor: CalixContrast.foreground(accentSource, on: surface))
+        return CalixContrast.foreground(accentSource, on: surface)
+    }
+
+    var accent: Color { Color(uiColor: readableAccent) }
+
+    var actionInk: UIColor {
+        CalixContrast.ratio(.black, readableAccent) >= CalixContrast.ratio(.white, readableAccent) ? .black : .white
     }
 
     var swatch: LinearGradient {
@@ -147,6 +153,21 @@ extension CalixTheme {
             Color(hue: hue, saturation: 0.50, brightness: 0.76),
             Color(hue: secondaryHue, saturation: 0.42, brightness: 0.49),
         ], startPoint: .bottomLeading, endPoint: .topTrailing)
+    }
+}
+
+struct VesperPrimaryAction: ButtonStyle {
+    @Environment(\.vesperTheme) private var theme
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color(uiColor: theme.actionInk))
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(theme.accent, in: RoundedRectangle(cornerRadius: 11))
+            .opacity(!enabled ? 0.50 : configuration.isPressed ? 0.82 : 1)
     }
 }
 
@@ -480,7 +501,7 @@ struct EventLink: View {
                                 .foregroundStyle(library.data.preferences.theme.accent)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    if card { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }
+                    if card { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
                 }
                 .padding(card ? 11 : 0)
                 .contentShape(Rectangle())
@@ -777,7 +798,7 @@ private struct CalendarMonthGrid: View {
                         DatePicker("날짜", selection: $displayed, displayedComponents: .date)
                             .datePickerStyle(.wheel)
                             .labelsHidden()
-                        Button("확인") { choosingMonth = false }.buttonStyle(.borderedProminent)
+                        Button("확인") { choosingMonth = false }.buttonStyle(VesperPrimaryAction())
                     }
                     .padding()
                     .presentationDetents([.height(300)])

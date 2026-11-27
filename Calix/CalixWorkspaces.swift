@@ -333,11 +333,28 @@ struct CalixTimetable: View {
             } else {
                 VesperPage {
                     HStack(spacing: 8) {
-                        Picker("학기", selection: Binding(get: { selected }, set: { term = $0 })) {
-                            ForEach(terms, id: \.self) { Text(LocalizedStringKey($0)).tag($0) }
+                        Menu {
+                            ForEach(terms, id: \.self) { name in
+                                Button { term = name } label: {
+                                    if name == selected { Label(LocalizedStringKey(name), systemImage: "checkmark") }
+                                    else { Text(LocalizedStringKey(name)) }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(LocalizedStringKey(selected))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .font(.subheadline.weight(.semibold))
+                                    .layoutPriority(1)
+                                Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .padding(.leading, 7)
+                            .contentShape(Rectangle())
                         }
-                        .labelsHidden()
-                        Spacer(minLength: 0)
+                        .accessibilityLabel("학기")
+                        .accessibilityValue(Text(LocalizedStringKey(selected)))
                         Menu {
                             Button("공강 설정", systemImage: "sun.max") {
                                 weeklyOffDays = offDays
@@ -352,6 +369,7 @@ struct CalixTimetable: View {
                         } label: {
                             Image(systemName: "ellipsis.circle").font(.title3).frame(minWidth: 44, minHeight: 44)
                         }
+                        .accessibilityLabel("시간표 설정")
                     }
                     .padding(.horizontal, 8)
                     .vesperSurface()
@@ -407,7 +425,7 @@ struct CalixTimetable: View {
             TextField("학기 이름", text: $termName)
             Button("취소", role: .cancel) {}
             Button("추가") {
-                let name = String(termName.trimmed.prefix(80))
+                let name = String(termName.trimmed.prefix(40))
                 if library.update({ data in
                     var settings = data.preferences.timetableOffDays ?? [:]
                     settings[name] = settings[name] ?? []
@@ -856,7 +874,7 @@ struct ProtectedView: View {
         } actions: {
             Button("잠금 해제") {
                 Task { access = await library.authenticate("\(title)을 열려면 인증하세요.") }
-            }.buttonStyle(.borderedProminent)
+            }.buttonStyle(VesperPrimaryAction())
         }
     }
 }

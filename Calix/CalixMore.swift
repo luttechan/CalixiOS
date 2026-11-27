@@ -57,7 +57,7 @@ struct CalixMore: View {
                     .background(library.data.preferences.theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
             .padding(9)
             .vesperSurface()
@@ -277,7 +277,7 @@ private struct CalixStudy: View {
                         Text(String(format: "%02d:%02d", remaining / 60, remaining % 60))
                             .font(.system(size: 48, weight: .semibold, design: .rounded)).monospacedDigit()
                         if focus != nil {
-                            Button("집중 종료") { library.stopFocus() }.buttonStyle(.borderedProminent)
+                            Button("집중 종료") { library.stopFocus() }.buttonStyle(VesperPrimaryAction())
                         }
                     }.padding(.vertical, 10)
                 }

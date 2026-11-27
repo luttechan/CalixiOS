@@ -62,7 +62,7 @@ struct AuroraLinkView: View {
                     Button { scan = true } label: {
                         Label("QR 스캔", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(VesperPrimaryAction())
                     SecureField("연동 주소 붙여넣기", text: $code)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
