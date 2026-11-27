@@ -201,6 +201,13 @@ struct CanvasSnapshot: Decodable {
     let courses: [Course]
 
     @MainActor func merge(into data: inout CalixData) {
+        if let previous = data.auroraSchoolOwner, previous != owner {
+            let ids = Set(data.auroraSchoolEvents ?? [])
+            data.events.removeAll { $0.remote && ids.contains($0.id) }
+            if data.canvasID == nil { data.attendance.removeAll() }
+            data.auroraSchoolEvents = nil
+            data.auroraSchoolOwner = nil
+        }
         var events = Dictionary(data.events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var attendance = Dictionary(data.attendance.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var validators = data.moduleValidators ?? [:]

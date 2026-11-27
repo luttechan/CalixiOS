@@ -37,19 +37,16 @@ jobs:
             -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/Calix" \
             CODE_SIGNING_ALLOWED=NO build
           mkdir -p "$RUNNER_TEMP/calix-artifacts"
-          ditto -c -k --keepParent "$RUNNER_TEMP/Calix/Build/Products/Debug-iphonesimulator/Calix.app" \
-            "$RUNNER_TEMP/calix-artifacts/Calix-Vesper-Simulator.zip"
 
-      - name: Launch on an iPhone simulator
+      - name: Validate sync and capture iPhone 13
         timeout-minutes: 10
         run: |
           app="$RUNNER_TEMP/Calix/Build/Products/Debug-iphonesimulator/Calix.app"
-          device=$(xcrun simctl list devices available --json | jq -er '
-            [.devices | to_entries[] | select(.key | contains(".iOS-"))
-             | (.key | split(".iOS-")[1] | split("-") | map(tonumber)) as $runtime
-             | .value[] | select(.name | startswith("iPhone")) | {name, udid, runtime: $runtime}]
-            | sort_by([.name == "iPhone SE (3rd generation)", .runtime]) | last | .udid')
-          echo "Selected simulator: $device"
+          runtime=$(xcrun simctl list runtimes --json | jq -er '
+            [.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-")))]
+            | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')
+          device=$(xcrun simctl create "Calix iPhone 13" com.apple.CoreSimulator.SimDeviceType.iPhone-13 "$runtime")
+          echo "iPhone 13: $device"
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$app"
@@ -62,29 +59,40 @@ jobs:
           done
           cat "$data/Documents/calix-smoke.txt"
           grep -Fx 'PASS' "$data/Documents/calix-smoke.txt"
-          cp "$data/Documents/calix-smoke.txt" "$RUNNER_TEMP/calix-artifacts/"
+          node tests/AuroraWire.fixture.cjs "$RUNNER_TEMP/aurora-fixture-link" &
+          fixture=$!
+          trap 'kill "$fixture" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            test ! -s "$RUNNER_TEMP/aurora-fixture-link" || break
+            sleep 1
+          done
+          xcrun simctl terminate "$device" "$bundle_id"
+          xcrun simctl launch "$device" "$bundle_id" -calix-link-wire "$(cat "$RUNNER_TEMP/aurora-fixture-link")"
+          for attempt in {1..35}; do
+            test ! -s "$data/Documents/calix-wire.txt" || break
+            sleep 1
+          done
+          cat "$data/Documents/calix-wire.txt"
+          grep -Fx 'PASS' "$data/Documents/calix-wire.txt"
           xcrun simctl status_bar "$device" override --time '9:41' --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState unplugged --batteryLevel 100 || true
-          for page in home home-vesper deadlines calendar courses more; do
+          index=0
+          for page in home deadlines calendar courses timetable checklist grades study more aurora-link; do
+            index=$((index + 1))
             xcrun simctl terminate "$device" "$bundle_id" || true
             xcrun simctl launch "$device" "$bundle_id" -calix-screenshot "$page"
-            sleep 3
-            xcrun simctl io "$device" screenshot "$RUNNER_TEMP/calix-artifacts/Calix-$page.png"
+            sleep 2
+            number=$(printf '%02d' "$index")
+            png="$RUNNER_TEMP/calix-artifacts/$number-$page.png"
+            xcrun simctl io "$device" screenshot "$png"
+            sips -g pixelWidth -g pixelHeight "$png" | grep -F 'pixelWidth: 1170'
+            sips -g pixelWidth -g pixelHeight "$png" | grep -F 'pixelHeight: 2532'
           done
-          xcrun simctl terminate "$device" "$bundle_id" || true
-          xcrun simctl launch "$device" "$bundle_id" -calix-screenshot home
-          (
-            xcrun simctl io "$device" recordVideo --codec=h264 "$RUNNER_TEMP/calix-artifacts/Calix-Vesper-demo.mp4" &
-            recording=$!
-            sleep 6
-            kill -INT "$recording" 2>/dev/null || true
-            wait "$recording" || true
-          )
+          test "$(find "$RUNNER_TEMP/calix-artifacts" -name '*.png' | wc -l | tr -d ' ')" = 10
 
-      - name: Upload simulator build and screenshot
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      - name: Upload 10 iPhone 13 screenshots
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: Calix-Vesper-Simulator
+          name: Calix-Vesper-iPhone-13
           path: ${{ runner.temp }}/calix-artifacts/
           if-no-files-found: error
           retention-days: 14

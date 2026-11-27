@@ -11,7 +11,7 @@ struct AuroraPairing {
     let expires: Date
     let key: SymmetricKey
 
-    init(_ value: String) throws {
+    init(_ value: String, simulatorFixture: Bool = false) throws {
         guard value.utf8.count <= 1024,
               let parts = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
               parts.scheme == "calix-vesper", parts.host == "pair", parts.path.isEmpty,
@@ -19,7 +19,12 @@ struct AuroraPairing {
               let items = parts.queryItems,
               items.count == 6, Set(items.map(\.name)).count == 6 else { throw AuroraLinkError.code }
         let fields = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
-        guard fields["v"] == "2", let host = fields["host"], Self.isPrivate(host),
+        guard let host = fields["host"] else { throw AuroraLinkError.code }
+        var allowedHost = Self.isPrivate(host)
+        #if DEBUG && targetEnvironment(simulator)
+        allowedHost = allowedHost || (simulatorFixture && host == "127.0.0.1")
+        #endif
+        guard fields["v"] == "2", allowedHost,
               let port = fields["port"].flatMap(Int.init), (1024...65535).contains(port),
               let computer = fields["computer"], computer.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil,
               let unix = fields["expires"].flatMap(Double.init), unix.isFinite,
@@ -109,7 +114,7 @@ struct AuroraSnapshot: Decodable {
     struct Row: Decodable { let revision: String; let value: AuroraRecord }
     struct School: Decodable {
         let id, title, course, kind, note: String
-        let due, url, status: String?
+        let due, url, status, feedback: String?
         let done: Bool
     }
     struct Attendance: Decodable {
@@ -130,6 +135,7 @@ struct AuroraOffer: Encodable {
     }
     let receipt, name: String
     let changes: [String: [String: Change]]
+    var schoolOwner: String? = nil
 }
 
 enum AuroraCodec {
@@ -171,7 +177,7 @@ enum AuroraCodec {
 @MainActor
 enum AuroraWorkspace {
     typealias Entries = [String: [String: AuroraRecord]]
-    static let kinds = ["event", "task", "lesson", "grade", "journal", "focus", "holiday"]
+    static let kinds = ["event", "canvasEdit", "task", "lesson", "grade", "journal", "focus", "holiday"]
 
     static func uuid(_ identifier: String) -> UUID {
         let bytes = Array(SHA256.hash(data: Data(identifier.utf8)))
@@ -195,7 +201,14 @@ enum AuroraWorkspace {
                 "title": .text(item.title), "course": .text(item.course), "start": AuroraCodec.timestamp(item.starts),
                 "due": AuroraCodec.timestamp(item.due), "note": .text(item.note), "done": .flag(item.done),
                 "starred": .flag(item.starred), "category": .text(item.auroraCategory ?? ""),
-                "color": .text(item.auroraColor ?? ""),
+                "color": .text(item.auroraColor ?? ""), "series": item.seriesID.map(AuroraValue.text) ?? .empty,
+            ])
+        }
+        for item in data.events where item.remote && item.id.hasPrefix("canvas:") &&
+            (item.customTitle != nil || !item.note.isEmpty) {
+            put("canvasEdit", item.id, item.id, [
+                "title": item.customTitle.map(AuroraValue.text) ?? .empty,
+                "note": .text(item.note),
             ])
         }
         for item in data.tasks where item.sourceID == nil {
@@ -249,13 +262,17 @@ enum AuroraWorkspace {
                 changes[kind, default: [:]][id] = .init(base: original.revision, value: nil)
             }
         }
-        return AuroraOffer(receipt: receipt, name: name, changes: changes)
+        return AuroraOffer(receipt: receipt, name: name, changes: changes,
+                           schoolOwner: data.canvasID ?? data.auroraSchoolOwner)
     }
 
     static func apply(_ snapshot: AuroraSnapshot, baseline: Entries, data: inout CalixData, link: inout AuroraLinkState) {
         let before = collect(data, link)
+        mergeSchool(snapshot, data: &data)
+        let matchingSchool = !snapshot.owner.isEmpty && (data.canvasID ?? data.auroraSchoolOwner) == snapshot.owner
         var conflicts = Set(snapshot.conflicts)
         for kind in kinds {
+            if kind == "canvasEdit" && !matchingSchool { continue }
             guard let rows = snapshot.records[kind] else { continue }
             let anchors = link.anchors[kind] ?? [:]
             let known = Set(rows.keys).union(anchors.keys)
@@ -278,6 +295,7 @@ enum AuroraWorkspace {
         }
         let merged = collect(data, link)
         for (kind, rows) in snapshot.records where kinds.contains(kind) {
+            if kind == "canvasEdit" && !matchingSchool { continue }
             for (id, row) in rows where !conflicts.contains("(kind)/(id)") {
                 if let value = merged[kind]?[id] {
                     link.anchors[kind, default: [:]][id] = .init(revision: row.revision, local: AuroraCodec.fingerprint(value))
@@ -295,6 +313,7 @@ enum AuroraWorkspace {
     private static func localID(_ kind: String, _ wire: String, _ link: AuroraLinkState) -> String {
         if let native = link.native[kind]?.first(where: { $0.value == wire })?.key { return native }
         if kind == "holiday" { return String(wire.dropFirst("holiday:".count)) }
+        if kind == "canvasEdit" { return wire }
         if kind == "event" && wire.hasPrefix("manual:") { return "desktop:" + wire }
         if wire.hasPrefix("m:"), wire.count == 34 {
             let parts = Array(wire.dropFirst(2))
@@ -311,10 +330,17 @@ enum AuroraWorkspace {
         case "event":
             let previous = data.events.first { $0.id == native }
             let series = row.string("series")
-            put(&data.events, CalixEvent(id: native, title: title, course: row.string("course"), kind: previous?.kind ?? .personal,
+            let course = row.string("course")
+            put(&data.events, CalixEvent(id: native, title: title, course: course.isEmpty ? (previous?.course ?? "") : course,
+                kind: previous?.kind ?? .personal,
                 due: AuroraCodec.date(row.string("due")), note: row.string("note"), done: row.bool("done"),
                 starred: row.bool("starred"), seriesID: previous?.seriesID ?? (series.isEmpty ? nil : series),
                 starts: AuroraCodec.date(row.string("start")), auroraCategory: row.string("category"), auroraColor: row.string("color")))
+        case "canvasEdit":
+            if let index = data.events.firstIndex(where: { $0.id == native && $0.remote }) {
+                data.events[index].customTitle = title.isEmpty ? nil : title
+                data.events[index].note = row.string("note")
+            }
         case "task":
             guard let id else { return }
             put(&data.tasks, CalixTask(id: id, title: title, section: row.string("section"), done: row.bool("done"),
@@ -356,6 +382,11 @@ enum AuroraWorkspace {
         let id = UUID(uuidString: native)
         switch kind {
         case "event": data.events.removeAll { $0.id == native && !$0.remote }
+        case "canvasEdit":
+            if let index = data.events.firstIndex(where: { $0.id == native && $0.remote }) {
+                data.events[index].customTitle = nil
+                data.events[index].note = ""
+            }
         case "task": data.tasks.removeAll { $0.id == id && $0.sourceID == nil }
         case "lesson": data.lessons.removeAll { $0.id == id }
         case "grade": data.grades.removeAll { $0.id == id && $0.canvasCourseID == nil }
@@ -370,16 +401,19 @@ enum AuroraWorkspace {
         guard !snapshot.owner.isEmpty, data.canvasID == nil || data.canvasID == snapshot.owner,
               data.auroraSchoolOwner == nil || data.auroraSchoolOwner == snapshot.owner else { return }
         data.auroraSchoolOwner = snapshot.owner
+        var imported = Set(data.auroraSchoolEvents ?? [])
         for row in snapshot.school {
             let previous = data.events.first { $0.id == row.id }
+            if previous == nil { imported.insert(row.id) }
             let url = row.url.flatMap(URL.init(string:)).flatMap { CanvasBrowser.isCampus($0) ? $0 : nil }
             put(&data.events, CalixEvent(id: row.id, title: previous?.customTitle ?? row.title,
                 course: row.course, kind: row.kind == "movie" ? .video : .assignment,
                 due: AuroraCodec.date(row.due ?? ""), note: previous?.note ?? row.note,
                 done: previous?.manualCompletion ?? row.done, starred: previous?.starred ?? false,
-                remote: true, manualCompletion: previous?.manualCompletion, url: url, feedback: previous?.feedback,
+                remote: true, manualCompletion: previous?.manualCompletion, url: url, feedback: row.feedback ?? previous?.feedback,
                 customTitle: previous?.customTitle, syncStatus: row.status))
         }
+        data.auroraSchoolEvents = imported.sorted()
         for row in snapshot.attendance {
             if !row.id.isEmpty {
                 put(&data.attendance, CalixAttendance(id: row.id, course: row.course, title: row.title,

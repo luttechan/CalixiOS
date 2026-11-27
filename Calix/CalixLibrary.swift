@@ -213,6 +213,7 @@ struct CalixData: Codable {
     var lastSync: Date?
     var auroraLink: AuroraLinkState?
     var auroraSchoolOwner: String?
+    var auroraSchoolEvents: [String]?
 
     static func dayKey(_ date: Date) -> String {
         let values = Calendar.current.dateComponents([.year, .month, .day], from: date)

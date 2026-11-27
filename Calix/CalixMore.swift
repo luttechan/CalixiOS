@@ -7,6 +7,21 @@ struct CalixMore: View {
     let library: CalixLibrary
 
     var body: some View {
+        #if DEBUG
+        switch CalixScreenshot.page {
+        case "aurora-link": AuroraLinkView(library: library)
+        case "timetable": CalixTimetable(library: library)
+        case "checklist": CalixChecklist(library: library)
+        case "grades": CalixGrades(library: library)
+        case "study": CalixStudy(library: library)
+        default: workspace
+        }
+        #else
+        workspace
+        #endif
+    }
+
+    private var workspace: some View {
         VesperPage {
             VesperSection(title: "학습") {
                 destination("시간표", "rectangle.split.3x3") { CalixTimetable(library: library) }
