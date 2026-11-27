@@ -253,17 +253,20 @@ struct CanvasSnapshot: Decodable {
         let due: Date?
         let dueKnown: Bool?
         let done: Bool
+        let completionKnown: Bool?
         let url: URL?
         let feedback: String?
         let status: String?
 
         func event(previous: CalixEvent?) -> CalixEvent {
-            CalixEvent(id: id, title: previous?.customTitle ?? title, course: course, kind: kind,
+            let preserveCompletion = status == "unverified" || completionKnown == false
+            return CalixEvent(id: id, title: previous?.customTitle ?? title, course: course, kind: kind,
                        due: dueKnown == true ? due : (due ?? previous?.due), note: previous?.note ?? "",
-                       done: previous?.manualCompletion ?? (status == "unverified" ? (previous?.done ?? done) : done),
+                       done: previous?.manualCompletion ?? (preserveCompletion ? (previous?.done ?? done) : done),
                        starred: previous?.starred ?? false, remote: true,
                        manualCompletion: previous?.manualCompletion, url: url.flatMap { CanvasBrowser.isCampus($0) ? $0 : nil },
-                       feedback: feedback ?? previous?.feedback, customTitle: previous?.customTitle, syncStatus: status,
+                       feedback: feedback ?? previous?.feedback, customTitle: previous?.customTitle,
+                       syncStatus: completionKnown == false ? (previous?.syncStatus ?? status) : status,
                        deadlineKnown: due != nil || dueKnown == true || previous?.deadlineKnown == true)
         }
     }

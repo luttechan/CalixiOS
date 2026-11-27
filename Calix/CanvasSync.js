@@ -273,6 +273,7 @@ const readPlanner = async () => {
         indexed.set(key, {
             id: key, title: clip(row.plannable?.title), kind: "과제", course: clip(row.context_name),
             due, dueKnown: due !== null || row.plannable?.due_at === null, done: source?.submitted === true || source?.graded === true,
+            completionKnown: typeof source?.submitted === "boolean" || source?.graded === true,
             status: source?.graded === true ? "graded" : source?.submitted === true ? "submitted" : null,
             url: link(row.html_url) || link(`/courses/${courseID}/assignments/${assignmentID}`),
         });
@@ -296,8 +297,11 @@ const recoverCalendar = async courseIDs => {
         const key = `canvas:${courseID}:assignment:${assignmentID}`;
         const due = firstDate(row.start_at, assignment.due_at);
         const submission = assignment.submission;
+        const workflow = clip(submission?.workflow_state, 40);
+        const done = Boolean(submission?.submitted_at) || ["submitted", "graded"].includes(workflow);
         events.set(key, { id:key, title, kind:"과제", due, dueKnown:due !== null,
-            done:Boolean(submission?.submitted_at) || ["submitted", "graded"].includes(submission?.workflow_state),
+            done, completionKnown: done || Boolean(workflow) || submission?.missing === true,
+            status: workflow === "graded" ? "graded" : submission?.late ? "late" : done ? "submitted" : submission?.missing ? "missing" : null,
             url:link(assignment.html_url || row.html_url) || link(`/courses/${courseID}/assignments/${assignmentID}`) });
     }
     return {rows: events, status: partial ? "partial" : events.size ? "ok" : "empty"};
@@ -441,12 +445,13 @@ const gather = async (row) => {
             if (criterion?.comments) labels.push(clip(criterion.comments, 2000));
         }
         const due = firstDate(submission?.cached_due_date, item.submission?.cached_due_date, item.due_at);
+        const done = Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded";
         return [{ id: `canvas:${courseID}:assignment:${assignmentID}`, title: clip(item.name), course: name, kind: "과제",
             due, dueKnown: due !== null || (item.due_at === null && submission?.cached_due_date === null),
-            done: Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded",
+            done, completionKnown: done || Boolean(workflow) || submission?.missing === true,
             url: link(item.html_url) || link(`${base.replace("/api/v1", "")}/assignments/${assignmentID}`),
             status: submission?.missing ? "missing" : workflow === "graded" ? "graded" : submission?.late ? "late" :
-                (workflow === "submitted" || submission?.submitted_at) ? "submitted" : null,
+                done ? "submitted" : null,
             feedback: labels.join("\n").slice(0, 6000) || null }];
     }) ?? null;
     const modules = videos.status === "fulfilled" ? videos.value : null;
@@ -486,10 +491,17 @@ for (const course of output) {
     for (const row of planner.rows.values()) {
         if (!row.id.startsWith(prefix)) continue;
         const saved = assignments.get(row.id);
-        if (saved && row.due) {
-            saved.due = row.due;
-            saved.dueKnown = true;
-            plannerUsed++;
+        if (saved) {
+            if (saved.completionKnown === false && row.completionKnown) {
+                saved.done = row.done;
+                saved.status = row.status;
+                saved.completionKnown = true;
+            }
+            if (row.due) {
+                saved.due = row.due;
+                saved.dueKnown = true;
+                plannerUsed++;
+            }
         } else if (!saved && row.title) {
             assignments.set(row.id, {...row, course: course.name});
             plannerUsed++;

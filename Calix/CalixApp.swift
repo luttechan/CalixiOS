@@ -130,12 +130,15 @@ enum CalixScreenshot {
         )
         guard let json = result as? String else { return false }
         var data = CalixData()
+        data.events = [CalixEvent(id: "canvas:42:assignment:5", title: "Previously graded",
+                                  done: true, remote: true, syncStatus: "graded")]
         try CanvasSnapshot.decode(json).merge(into: &data)
         let assignment = data.events.first { $0.id == "canvas:42:assignment:4" }
         let calendar = data.events.first { $0.id == "canvas:42:assignment:5" }
         let video = data.events.first { $0.id == "canvas:42:video:71" }
         return assignment?.due != nil && assignment?.due == AuroraCodec.date("2026-11-30T14:59:00Z") &&
             calendar?.due != nil && calendar?.due == AuroraCodec.date("2026-12-01T14:59:00Z") &&
+            calendar?.done == true && calendar?.syncStatus == "graded" &&
             video?.due != nil && video?.due == AuroraCodec.date("2026-11-29T14:59:00Z")
     }
 

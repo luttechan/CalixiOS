@@ -257,6 +257,7 @@ test("retains an assignment from the first page and recovers missing assignments
         return fetch(url, settings);
     });
     assert.deepEqual(result.courses[0].assignments.map(row => row.id), ["canvas:42:assignment:4", "canvas:42:assignment:9"]);
+    assert.equal(result.courses[0].assignments[1].completionKnown, false);
     assert.equal(result.courses[0].assignmentSource, "partial");
     assert.equal(result.deadlineReport.calendarUsed, 1);
 });
