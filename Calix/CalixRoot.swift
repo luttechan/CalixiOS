@@ -706,6 +706,7 @@ struct CalixCalendar: View {
     @Environment(\.locale) private var locale
     let library: CalixLibrary
     @State private var date = Date()
+    @State private var displayedMonth = Date()
     @State private var holiday = ""
     @State private var editingHoliday = false
     @State private var adding = false
@@ -719,9 +720,7 @@ struct CalixCalendar: View {
             return start <= key && key <= end
         }.ordered
         VesperPage {
-            DatePicker("날짜", selection: $date, displayedComponents: .date)
-                .datePickerStyle(.graphical)
-                .padding(12)
+            CalendarMonthGrid(selected: $date, displayed: $displayedMonth, data: library.data)
                 .vesperSurface()
             VesperSection(title: LocalizedStringKey(date.formatted(.dateTime.month().day().weekday().locale(locale)))) {
                 if let name = library.data.holidays[key] { Label(name, systemImage: "calendar.badge.checkmark") }
@@ -740,6 +739,108 @@ struct CalixCalendar: View {
             Button("취소", role: .cancel) {}
         }
         .sheet(isPresented: $adding) { NavigationStack { EventEditor(library: library, draft: CalixEvent(kind: .personal, due: date)) } }
+    }
+}
+
+private struct CalendarMonthGrid: View {
+    @Environment(\.locale) private var locale
+    @Environment(\.vesperTheme) private var theme
+    @Binding var selected: Date
+    @Binding var displayed: Date
+    let data: CalixData
+    @State private var choosingMonth = false
+    private let columns = Array(repeating: GridItem(.flexible(minimum: 24), spacing: 0), count: 7)
+
+    private var calendar: Calendar {
+        var value = Calendar.current
+        value.locale = locale
+        return value
+    }
+
+    var body: some View {
+        let month = CalendarMonth(date: displayed, events: data.events, calendar: calendar)
+        let weekdays = calendar.veryShortStandaloneWeekdaySymbols
+        VStack(spacing: 8) {
+            HStack(spacing: 0) {
+                Button {
+                    choosingMonth = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(displayed.formatted(.dateTime.year().month(.wide).locale(locale))).font(.headline)
+                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    }
+                }
+                .foregroundStyle(.primary)
+                .buttonStyle(.plain)
+                .popover(isPresented: $choosingMonth) {
+                    VStack {
+                        DatePicker("날짜", selection: $displayed, displayedComponents: .date)
+                            .datePickerStyle(.wheel)
+                            .labelsHidden()
+                        Button("확인") { choosingMonth = false }.buttonStyle(.borderedProminent)
+                    }
+                    .padding()
+                    .presentationDetents([.height(300)])
+                }
+                Spacer()
+                monthButton(-1, label: "이전 달", icon: "chevron.left")
+                monthButton(1, label: "다음 달", icon: "chevron.right")
+            }
+            .padding(.leading, 6)
+
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(0..<7) { offset in
+                    Text(weekdays[(calendar.firstWeekday - 1 + offset) % 7])
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .frame(height: 23)
+                        .accessibilityHidden(true)
+                }
+                ForEach(0..<month.leadingDays, id: \.self) { _ in Color.clear.frame(height: 43).accessibilityHidden(true) }
+                ForEach(month.days, id: \.self) { day in
+                    let key = CalixData.dayKey(day)
+                    let marked = month.markedDays.contains(day) || data.holidays[key] != nil || data.offDays[key] != nil
+                    dayButton(day, marked: marked)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func monthButton(_ offset: Int, label: LocalizedStringKey, icon: String) -> some View {
+        Button {
+            if let month = calendar.date(byAdding: .month, value: offset, to: displayed) { displayed = month }
+        } label: {
+            Image(systemName: icon).font(.subheadline.weight(.semibold)).frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(theme.accent)
+        .accessibilityLabel(Text(label))
+    }
+
+    private func dayButton(_ day: Date, marked: Bool) -> some View {
+        let today = calendar.isDateInToday(day)
+        let chosen = calendar.isDate(day, inSameDayAs: selected)
+        return Button {
+            let offset = calendar.dateComponents([.day], from: calendar.startOfDay(for: selected), to: day).day ?? 0
+            selected = calendar.date(byAdding: .day, value: offset, to: selected) ?? day
+        } label: {
+            VStack(spacing: 3) {
+                Text(calendar.component(.day, from: day).formatted(.number.locale(locale)))
+                    .font(.subheadline.weight(today || chosen ? .semibold : .regular).monospacedDigit())
+                    .foregroundStyle(today || chosen ? theme.accent : Color.primary)
+                    .frame(width: 32, height: 32)
+                    .background(chosen ? theme.accent.opacity(0.16) : Color.clear, in: Circle())
+                    .overlay { if today { Circle().strokeBorder(theme.accent, lineWidth: 1.3) } }
+                Circle().fill(marked ? theme.accent : Color.clear).frame(width: 4, height: 4)
+            }
+            .frame(maxWidth: .infinity, minHeight: 43)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(day.formatted(.dateTime.year().month().day().weekday().locale(locale))))
+        .accessibilityHint(marked ? Text("일정 있음") : Text(verbatim: ""))
+        .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 }
 

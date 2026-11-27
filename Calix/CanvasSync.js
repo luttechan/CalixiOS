@@ -1,5 +1,11 @@
 if (location.origin !== "https://canvas.bufs.ac.kr") throw Error("AUTH_REQUIRED");
 
+const publishProgress = (stage, completed = 0, total = 0) => {
+    if (typeof progressRunID !== "string" || typeof window === "undefined") return;
+    try { window.webkit?.messageHandlers?.calixSyncProgress?.postMessage({ run: progressRunID, stage, completed, total }); }
+    catch { /* Sync can continue when the progress view has closed. */ }
+};
+
 const parse = (body) => JSON.parse(body.trimStart().replace(/^while\s*\(\s*1\s*\)\s*;/, ""));
 const request = async (path, learning = false, validator = null, timeout = 12000) => {
     const url = new URL(path, location.origin);
@@ -463,15 +469,27 @@ const gather = async (row) => {
 };
 
 const output = [];
-for (let i = 0; i < courses.length; i += 3) output.push(...await Promise.all(courses.slice(i, i + 3).map(gather)));
+let completedCourses = 0;
+publishProgress("courses", 0, courses.length);
+for (let i = 0; i < courses.length; i += 3) {
+    output.push(...await Promise.all(courses.slice(i, i + 3).map(async course => {
+        const result = await gather(course);
+        publishProgress("courses", ++completedCourses, courses.length);
+        return result;
+    })));
+}
+publishProgress("planner");
 const planner = await plannerPromise;
 const affected = output.filter(course => course.assignmentSource !== "ok" || !course.assignments?.length).map(course => course.id);
 let calendarStatus = "skipped", calendarUsed = 0, plannerUsed = 0;
 const calendar = new Map();
+const calendarBatches = Math.ceil(affected.length / 10);
+if (calendarBatches) publishProgress("calendar", 0, calendarBatches);
 for (let i = 0; i < affected.length; i += 10) {
     const recovered = await recoverCalendar(affected.slice(i, i + 10)).catch(reason => ({rows: new Map(), status: failureCode(reason)}));
     calendarStatus = calendarStatus === "skipped" || calendarStatus === recovered.status ? recovered.status : "partial";
     for (const [key, row] of recovered.rows) calendar.set(key, row);
+    publishProgress("calendar", 1 + i / 10, calendarBatches);
 }
 for (const course of output) {
     const prefix = `canvas:${course.id}:assignment:`;
@@ -509,6 +527,7 @@ for (const course of output) {
     }
     if (assignments.size) course.assignments = [...assignments.values()];
 }
+publishProgress("saving");
 return JSON.stringify({ owner, courses: output, deadlineReport: {
     planner: planner.status, plannerUsed, calendar: calendarStatus, calendarUsed,
 } });

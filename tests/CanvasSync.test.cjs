@@ -6,7 +6,7 @@ const { test } = require("node:test");
 const origin = "https://canvas.bufs.ac.kr";
 const script = fs.readFileSync(path.join(__dirname, "../Calix/CanvasSync.js"), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const sync = new AsyncFunction("expectedOwner", "includeAttendance", "location", "document", "fetch", "knownModules", "window", script);
+const sync = new AsyncFunction("expectedOwner", "includeAttendance", "location", "document", "fetch", "knownModules", "window", "progressRunID", script);
 const root = "/learningx/api/v1/courses/42";
 const fixtures = new Map([
     ["/api/v1/users/self/profile", { id: 13 }],
@@ -62,6 +62,21 @@ function transport({ fail, carryNext = false, deep = false, unchanged = false, o
 
 const run = (owner, attendance, fetch, validators, window, document = { cookie: "xn_api_token=fixture-token" }) =>
     sync(owner, attendance, { origin }, document, fetch, validators, window).then(JSON.parse);
+
+test("reports school lookup progress scoped to the current sync", async () => {
+    const updates = [];
+    const window = {webkit: {messageHandlers: {calixSyncProgress: {postMessage: update => updates.push(update)}}}};
+    const fetch = async (url, options) => {
+        if (/\/assignment(?:s|_groups)$/.test(url.pathname)) return { status: 403, ok: false };
+        if (url.pathname.includes("/assignments/")) return { status: 404, ok: false };
+        return transport()(url, options);
+    };
+    await sync("13", false, {origin}, {cookie: "xn_api_token=fixture-token"}, fetch, {}, window, "active-run");
+    assert.deepEqual(updates.map(({stage, completed, total}) => [stage, completed, total]), [
+        ["courses", 0, 1], ["courses", 1, 1], ["planner", 0, 0], ["calendar", 0, 1], ["calendar", 1, 1], ["saving", 0, 0],
+    ]);
+    assert.ok(updates.every(update => update.run === "active-run"));
+});
 
 test("projects paginated assignments, LearningX video, and explicit attendance states", async () => {
     const value = await run("13", true, transport({ carryNext: true }));

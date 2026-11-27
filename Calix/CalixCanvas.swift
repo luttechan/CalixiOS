@@ -1,10 +1,74 @@
 import SwiftUI
 import WebKit
 
+struct CanvasSyncProgress {
+    enum Stage: String {
+        case preparing, courses, planner, calendar, saving
+    }
+
+    let stage: Stage
+    let completed: Int
+    let total: Int
+    let startedAt: TimeInterval
+    let estimatedEnd: TimeInterval?
+
+    init(stage: Stage, completed: Int, total: Int, previous: Self?, at now: TimeInterval) {
+        self.stage = stage
+        self.completed = completed
+        self.total = total
+        startedAt = previous?.stage == stage ? (previous?.startedAt ?? now) : now
+        if completed > 0 && completed < total {
+            let elapsed = now - startedAt
+            let remaining = elapsed / Double(completed) * Double(total - completed)
+            estimatedEnd = now + remaining
+        } else {
+            estimatedEnd = nil
+        }
+    }
+
+    func remainingSeconds(at now: TimeInterval) -> Int? {
+        guard let estimatedEnd, estimatedEnd > now else { return nil }
+        return max(5, Int(ceil((estimatedEnd - now) / 5)) * 5)
+    }
+}
+
+@MainActor
+final class CanvasProgressRelay: NSObject, ObservableObject, WKScriptMessageHandler {
+    static let handler = "calixSyncProgress"
+    @Published private(set) var progress: CanvasSyncProgress?
+    private var runID: String?
+
+    func begin() -> String {
+        let id = UUID().uuidString
+        runID = id
+        progress = CanvasSyncProgress(stage: .preparing, completed: 0, total: 0, previous: nil,
+                                      at: ProcessInfo.processInfo.systemUptime)
+        return id
+    }
+
+    func end() {
+        runID = nil
+        progress = nil
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        let origin = message.frameInfo.securityOrigin
+        guard message.frameInfo.isMainFrame, origin.protocol == "https", origin.host == "canvas.bufs.ac.kr",
+              origin.port == 0 || origin.port == 443,
+              let values = message.body as? [String: Any], let runID, values["run"] as? String == runID,
+              let name = values["stage"] as? String, let stage = CanvasSyncProgress.Stage(rawValue: name),
+              let completed = values["completed"] as? Int, let total = values["total"] as? Int,
+              (0...180).contains(total), (0...total).contains(completed) else { return }
+        progress = CanvasSyncProgress(stage: stage, completed: completed, total: total, previous: progress,
+                                      at: ProcessInfo.processInfo.systemUptime)
+    }
+}
+
 @MainActor
 final class CanvasBrowser: NSObject, WKNavigationDelegate, WKUIDelegate {
     static let startURL = URL(string: "https://canvas.bufs.ac.kr/login")!
     let view: WKWebView
+    let progress = CanvasProgressRelay()
     var onCampusPage: (() -> Void)?
 
     override init() {
@@ -12,6 +76,7 @@ final class CanvasBrowser: NSObject, WKNavigationDelegate, WKUIDelegate {
         config.websiteDataStore = .default()
         view = WKWebView(frame: .zero, configuration: config)
         super.init()
+        view.configuration.userContentController.add(progress, name: CanvasProgressRelay.handler)
         view.navigationDelegate = self
         view.uiDelegate = self
         view.load(URLRequest(url: Self.startURL))
@@ -51,6 +116,53 @@ private struct CampusWebView: UIViewRepresentable {
     let browser: CanvasBrowser
     func makeUIView(context: Context) -> WKWebView { browser.view }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
+private struct CampusSyncStatus: View {
+    @Environment(\.locale) private var locale
+    @ObservedObject var relay: CanvasProgressRelay
+    let cancel: () -> Void
+
+    var body: some View {
+        if let progress = relay.progress {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    if progress.total == 0 { ProgressView().controlSize(.small) }
+                    stageLabel(progress)
+                    Spacer()
+                    Button("중단", action: cancel).controlSize(.small)
+                }
+                if progress.total > 0 {
+                    ProgressView(value: Double(progress.completed), total: Double(progress.total))
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        estimateLabel(progress)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .font(.subheadline)
+        }
+    }
+
+    private func stageLabel(_ progress: CanvasSyncProgress) -> Text {
+        switch progress.stage {
+        case .preparing: Text("과목 목록 확인 중")
+        case .courses: Text("과목 \(progress.completed) / \(progress.total)")
+        case .planner: Text("플래너 확인 중")
+        case .calendar: Text("달력 확인 중")
+        case .saving: Text("일정 저장 중")
+        }
+    }
+
+    private func estimateLabel(_ progress: CanvasSyncProgress) -> Text {
+        guard let seconds = progress.remainingSeconds(at: ProcessInfo.processInfo.systemUptime) else {
+            return progress.completed == 0 ? Text("예상 시간 계산 중") : Text("학교 응답 대기 중")
+        }
+        if seconds < 60 { return Text("약 \(seconds)초 남음") }
+        let duration = DeadlineCountdown.duration(minutes: Int(ceil(Double(seconds) / 60)), locale: locale)
+        return Text("약 \(duration) 남음")
+    }
 }
 
 struct CalixCanvas: View {
@@ -95,13 +207,8 @@ struct CalixCanvas: View {
                     }
                     .font(.subheadline)
                 }
-                if syncTask != nil {
-                    HStack {
-                        ProgressView()
-                        Text("학교 일정 확인 중")
-                        Spacer()
-                        Button("중단") { cancel() }
-                    }
+                if syncTask != nil, let browser {
+                    CampusSyncStatus(relay: browser.progress, cancel: cancel)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,6 +242,7 @@ struct CalixCanvas: View {
     private func cancel() {
         guard let syncTask else { return }
         syncTask.cancel()
+        browser?.progress.end()
         browser?.view.reload()
         message = "동기화를 중단하는 중입니다."
     }
@@ -147,7 +255,11 @@ struct CalixCanvas: View {
         }
         syncTask = Task {
             report = nil
-            defer { syncTask = nil }
+            let runID = browser.progress.begin()
+            defer {
+                browser.progress.end()
+                syncTask = nil
+            }
             do {
                 let script = try CanvasSnapshot.script()
                 let includeAttendance = library.data.preferences.syncAttendance ?? library.data.preferences.showAttendance
@@ -155,7 +267,8 @@ struct CalixCanvas: View {
                     "expectedOwner": library.data.canvasID ?? "",
                     "knownModules": library.data.canvasID == nil || library.data.canvasDeadlineRevision != CanvasSnapshot.deadlineRevision
                         ? [:] : (library.data.moduleValidators ?? [:]),
-                    "includeAttendance": includeAttendance
+                    "includeAttendance": includeAttendance,
+                    "progressRunID": runID
                 ]
                 let result = try await browser.view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page)
                 try Task.checkCancellation()

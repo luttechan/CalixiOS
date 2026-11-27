@@ -73,11 +73,28 @@ enum CalixScreenshot {
             let countdown = DeadlineCountdown(due: now, now: now) == .overdue &&
                 DeadlineCountdown(due: now.addingTimeInterval(59), now: now) == .underMinute &&
                 DeadlineCountdown(due: now.addingTimeInterval(5_459), now: now) == .remaining(minutes: 90)
-            report = valid && aurora && profile && deadlines && countdown ? "PASS" : "Canvas, Aurora, profile, or countdown verification failed"
+            let calendar = verifyCalendarMarkers()
+            let progress = CanvasSyncProgress(stage: .courses, completed: 0, total: 5, previous: nil, at: 50)
+            let measured = CanvasSyncProgress(stage: .courses, completed: 2, total: 5, previous: progress, at: 60)
+            let saved = CanvasSyncProgress(stage: .saving, completed: 0, total: 0, previous: measured, at: 72)
+            let estimate = measured.remainingSeconds(at: 60) == 15 && measured.remainingSeconds(at: 72) == 5 &&
+                measured.remainingSeconds(at: 75) == nil && saved.remainingSeconds(at: 72) == nil
+            report = valid && aurora && profile && deadlines && countdown && calendar && estimate
+                ? "PASS" : "Canvas, Aurora, profile, calendar, or countdown verification failed"
         } catch {
             report = String(describing: error)
         }
         try? report.write(to: URL.documentsDirectory.appendingPathComponent("calix-smoke.txt"), atomically: true, encoding: .utf8)
+    }
+
+    private static func verifyCalendarMarkers() -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let start = AuroraCodec.date("2026-11-30T12:00:00Z"),
+              let due = AuroraCodec.date("2026-12-02T18:00:00Z") else { return false }
+        let data = [CalixEvent(title: "Multi-day fixture", due: due, starts: start), CalixEvent(title: "Undated fixture")]
+        let month = CalendarMonth(date: due, events: data, calendar: calendar)
+        return month.days.count == 31 && month.markedDays == Set(month.days.prefix(2))
     }
 
     @MainActor private static func verifyCanvasDeadlineTransport() async throws -> Bool {
