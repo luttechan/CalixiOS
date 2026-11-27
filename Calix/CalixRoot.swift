@@ -465,7 +465,10 @@ struct EventLink: View {
                         .background(library.data.preferences.theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                        Text([event.course, event.done ? "완료" : event.due?.formatted(.dateTime.month().day().hour().minute().locale(locale)) ?? "기한 없음"].filter { !$0.isEmpty }.joined(separator: ", "))
+                        let due = event.due?.formatted(.dateTime.month().day().hour().minute().locale(locale))
+                            ?? String(localized: "기한 없음", locale: locale)
+                        let detail = [event.course, due, event.done ? String(localized: "완료", locale: locale) : ""]
+                        Text(detail.filter { !$0.isEmpty }.joined(separator: ", "))
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     if card { Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) }

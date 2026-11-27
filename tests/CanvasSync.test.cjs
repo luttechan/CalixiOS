@@ -20,7 +20,8 @@ const fixtures = new Map([
         rubric_assessment: { clarity: { comments: "Clear reasoning" } },
     }]],
     [root + "/modules", { modules: [{ items: [{
-        title: "Lecture", module_item_id: 8, completed: true, content_data: { item_content_type: "readystream" },
+        title: "Lecture", module_item_id: 8, completed: true,
+        content_data: { item_content_type: "readystream", due_at: "2026-11-20T14:59:00Z" },
     }] }] }],
     [root + "/lessons", [{ week_position: 2, lessons: [{ lesson_position: 1, class_date: "2026-11-20" }] }]],
     [root + "/lessons/attendances", [{ week_position: 2, lesson_position: 1, attendance_status: "excused" }]],
@@ -125,4 +126,47 @@ test("reads the student's submission deadline and nested LearningX periods", asy
     const [course] = (await run("13", false, transport({ overrides }))).courses;
     assert.equal(course.assignments[0].due, "2026-11-20T13:30:00.000Z");
     assert.equal(course.videos[0].due, "2026-11-23T14:59:00.000Z");
+});
+
+test("uses the LearningX item ID to recover video dates while attendance stays off", async () => {
+    const modules = root + "/modules";
+    const details = root + "/attendance_items";
+    const overrides = {
+        [modules]: [{ module_items: [
+            { title: "Lecture", module_item_id: 71, content_id: 9001, content_data: { item_id: 9001, item_content_type: "movie", due_at: null } },
+            { title: "No deadline", module_item_id: 72, content_id: 9002, content_data: { item_id: 9002, item_content_type: "movie" } },
+        ] }],
+        [details]: { attendance_items: [
+            { item_id: 71, due_at: "2026-11-05T14:59:00Z" },
+            { item_id: 9001, due_at: "2026-11-21T14:59:00Z" },
+        ] },
+    };
+    const called = [];
+    const fetch = transport({ overrides });
+    const [course] = (await run("13", false, (url, request) => {
+        called.push(url.pathname);
+        return fetch(url, request);
+    })).courses;
+    assert.equal(course.videos.find(row => row.id.endsWith(":71")).due, "2026-11-21T14:59:00.000Z");
+    assert.equal(course.videos.find(row => row.id.endsWith(":72")).due, null);
+    assert.equal(course.attendance, null);
+    assert.equal(course.modulesValidator, null);
+    assert.deepEqual(called.filter(path => path.includes("/attendance")), [details]);
+});
+
+test("reads only the owner's submission with embedded assignment when assignment lists fail", async () => {
+    const submissions = "/api/v1/courses/42/students/submissions";
+    const dates = [
+        { assignment_id: 4, user_id: 13, cached_due_date: "2026-11-21T14:59:00Z" },
+        { assignment_id: 7, user_id: 14, cached_due_date: "2026-11-22T14:59:00Z" },
+    ];
+    const fetch = (url, request) => {
+        if (url.pathname.endsWith("/assignments") || url.pathname.endsWith("/assignment_groups")) throw Error("offline");
+        const overrides = url.pathname === submissions ? { [submissions]: url.searchParams.getAll("include[]").includes("assignment")
+            ? dates.map(row => ({ ...row, assignment: { id: row.assignment_id, name: "Recovered", due_at: "2026-11-20T14:59:00Z" } }))
+            : dates } : {};
+        return transport({ overrides })(url, request);
+    };
+    const [course] = (await run("13", false, fetch)).courses;
+    assert.deepEqual(course.assignments.map(row => [row.id, row.due]), [["canvas:42:assignment:4", "2026-11-21T14:59:00.000Z"]]);
 });

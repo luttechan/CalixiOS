@@ -128,7 +128,7 @@ struct CalixCanvas: View {
                 let includeAttendance = library.data.preferences.syncAttendance ?? library.data.preferences.showAttendance
                 let arguments: [String: Any] = [
                     "expectedOwner": library.data.canvasID ?? "",
-                    "knownModules": library.data.canvasID == nil || library.data.canvasDeadlineRevision != 1
+                    "knownModules": library.data.canvasID == nil || library.data.canvasDeadlineRevision != CanvasSnapshot.deadlineRevision
                         ? [:] : (library.data.moduleValidators ?? [:]),
                     "includeAttendance": includeAttendance
                 ]
@@ -164,6 +164,7 @@ struct CalixCanvas: View {
 }
 
 struct CanvasSnapshot: Decodable {
+    static let deadlineRevision = 2
     struct Course: Decodable {
         let id: String
         let name: String
@@ -211,7 +212,7 @@ struct CanvasSnapshot: Decodable {
         }
         var events = Dictionary(data.events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var attendance = Dictionary(data.attendance.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var validators = data.canvasDeadlineRevision == 1 ? (data.moduleValidators ?? [:]) : [:]
+        var validators = data.canvasDeadlineRevision == Self.deadlineRevision ? (data.moduleValidators ?? [:]) : [:]
         var registered = data.canvasCourses ?? [:]
         for course in courses {
             registered[course.id] = CanvasCourse(id: course.id, name: course.name, term: registered[course.id]?.term ?? data.preferences.mainTerm)
@@ -226,7 +227,7 @@ struct CanvasSnapshot: Decodable {
         data.attendance = attendance.values.sorted { $0.id < $1.id }
         let active = Set(courses.map(\.id))
         data.moduleValidators = validators.filter { active.contains($0.key) }
-        data.canvasDeadlineRevision = 1
+        data.canvasDeadlineRevision = Self.deadlineRevision
         data.canvasCourses = registered
         data.canvasID = owner
         if courses.isEmpty || courses.contains(where: { $0.assignments != nil || $0.modulesVerified == true || $0.attendance != nil }) {

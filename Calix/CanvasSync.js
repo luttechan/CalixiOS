@@ -81,7 +81,9 @@ const readVideos = (course, courseID, body) => {
         const data = row.content_data;
         const media = data?.item_content_data;
         const type = String(media?.content_type || data?.item_content_type || row.content_type || "").toLowerCase();
-        const itemID = id(row.module_item_id ?? data?.module_item_id);
+        const learningItemID = id(data?.item_id) ?? id(row.content_id);
+        const moduleID = id(row.module_item_id) ?? id(data?.module_item_id);
+        const itemID = moduleID ?? learningItemID;
         const movingImage = mediaTypes.has(type) || (type === "embed" && mediaTypes.has(String(media?.content_subtype || "").toLowerCase())) ||
             (media?.progress_support === true && Number(media.duration) > 0);
         const title = clip(row.title || data?.title || media?.title);
@@ -94,17 +96,19 @@ const readVideos = (course, courseID, body) => {
             const previous = events.get(key);
             events.set(key, { id: key, title, course, kind: "영상", due: due ?? previous?.due ?? null,
                 done: done || previous?.done === true, status: status || previous?.status || null,
-                url: link(row.html_url) || link(`/courses/${courseID}/modules`) });
+                learningItemID: learningItemID ?? previous?.learningItemID,
+                url: link(row.html_url) || link(row.url) || link(moduleID
+                    ? `/courses/${courseID}/modules/items/${moduleID}` : `/courses/${courseID}/modules`) });
         }
         for (const child of Object.values(row).reverse()) if (child && typeof child === "object") pending.push(child);
     }
     return [...events.values()];
 };
 
-const readAttendance = async (course, courseID, root) => {
+const readAttendance = async (course, courseID, root, attendanceItems) => {
     const [weeks, statuses, items, summaries] = await Promise.all([
         request(root + "/lessons", true), request(root + "/lessons/attendances", true),
-        request(root + "/attendance_items?include_detail=true", true), request(root + "/attendance_items/summary?only_use_attendance=true", true)
+        attendanceItems(), request(root + "/attendance_items/summary?only_use_attendance=true", true)
     ]);
     if (!Array.isArray(weeks.data) || !Array.isArray(statuses.data) || !Array.isArray(items.data?.attendance_items) ||
         !summaries.data?.attendance_summaries) throw Error("INVALID_ATTENDANCE");
@@ -158,6 +162,9 @@ const gather = async (row) => {
     const base = `/api/v1/courses/${courseID}`;
     const learning = `/learningx/api/v1/courses/${courseID}`;
     const cached = typeof knownModules === "object" && knownModules !== null ? knownModules[courseID] : null;
+    let attendanceRequest;
+    const attendanceItems = () => attendanceRequest ??= request(learning + "/attendance_items?include_detail=true", true);
+    const submissionPath = base + `/students/submissions?student_ids[]=${owner}&include[]=submission_comments&include[]=rubric_assessment&per_page=100`;
     const [assigned, videos, attendance, submissions] = await Promise.allSettled([
         readAssignments(base),
         (async () => {
@@ -167,7 +174,25 @@ const gather = async (row) => {
                 response = await request(learning + "/modules?include_detail=true", true, cached);
                 if (response.unchanged) return { rows: null, unchanged: true, validator: response.validator };
                 rows = readVideos(name, courseID, response.data);
-                if (rows.length || !fallback) return { rows, validator: response.validator };
+                if (rows.length || !fallback) {
+                    const needsDeadlineCheck = rows.some(row => row.due === null);
+                    if (rows.some(row => row.due === null && row.learningItemID)) {
+                        const details = await attendanceItems().catch(() => null);
+                        const items = details?.data?.attendance_items;
+                        if (Array.isArray(items)) {
+                            const dueByID = new Map();
+                            for (const item of items) {
+                                const key = id(item?.item_id);
+                                const due = firstDate(item?.due_at, item?.item_content_data?.due_at);
+                                if (key && due && item.published !== false) {
+                                    dueByID.set(key, dueByID.has(key) && dueByID.get(key) !== due ? null : due);
+                                }
+                            }
+                            for (const row of rows) row.due ??= dueByID.get(row.learningItemID) ?? null;
+                        }
+                    }
+                    return { rows, validator: needsDeadlineCheck ? null : response.validator };
+                }
             } catch (reason) {
                 error = reason;
             }
@@ -187,12 +212,25 @@ const gather = async (row) => {
             if (error) throw error;
             return { rows: rows ?? [], validator: response?.validator };
         })(),
-        includeAttendance ? readAttendance(name, courseID, learning) : Promise.resolve(null),
-        list(base + `/students/submissions?student_ids[]=${owner}&include[]=submission_comments&include[]=rubric_assessment&per_page=100`)
+        includeAttendance ? readAttendance(name, courseID, learning, attendanceItems) : Promise.resolve(null),
+        list(submissionPath)
     ]);
-    const enriched = submissions.status === "fulfilled" ? new Map(submissions.value.filter((row) => id(row.user_id) === owner)
+    const ownSubmissions = rows => rows.filter(row => id(row?.user_id) === owner);
+    const enriched = submissions.status === "fulfilled" ? new Map(ownSubmissions(submissions.value)
         .map((row) => [id(row.assignment_id), row])) : new Map();
-    const assignments = assigned.status === "fulfilled" ? assigned.value.flatMap((item) => {
+    let assignedItems = assigned.status === "fulfilled" ? assigned.value : null;
+    if (!assignedItems?.length && enriched.size) {
+        const withAssignments = await list(submissionPath + "&include[]=assignment").catch(() => []);
+        const fromSubmissions = [];
+        for (const submission of ownSubmissions(withAssignments)) {
+            const assignmentID = id(submission.assignment_id);
+            if (!assignmentID || id(submission.assignment?.id) !== assignmentID) continue;
+            if (!enriched.has(assignmentID)) enriched.set(assignmentID, submission);
+            fromSubmissions.push(submission.assignment);
+        }
+        if (fromSubmissions.length) assignedItems = fromSubmissions;
+    }
+    const assignments = assignedItems?.flatMap((item) => {
         const assignmentID = id(item?.id);
         if (!assignmentID || !item.name || item.published === false) return [];
         const submission = enriched.get(assignmentID) || item.submission;
@@ -208,7 +246,7 @@ const gather = async (row) => {
         for (const criterion of Object.values(submission?.rubric_assessment || {})) {
             if (criterion?.comments) labels.push(clip(criterion.comments, 2000));
         }
-        const due = firstDate(item.due_at, submission?.cached_due_date, item.submission?.cached_due_date);
+        const due = firstDate(submission?.cached_due_date, item.submission?.cached_due_date, item.due_at);
         return [{ id: `canvas:${courseID}:assignment:${assignmentID}`, title: clip(item.name), course: name, kind: "과제",
             due, dueKnown: due !== null || item.due_at === null,
             done: Boolean(submission?.submitted_at) || workflow === "submitted" || workflow === "graded",
@@ -216,7 +254,7 @@ const gather = async (row) => {
             status: submission?.missing ? "missing" : workflow === "graded" ? "graded" : submission?.late ? "late" :
                 (workflow === "submitted" || submission?.submitted_at) ? "submitted" : null,
             feedback: labels.join("\n").slice(0, 6000) || null }];
-    }) : null;
+    }) ?? null;
     const modules = videos.status === "fulfilled" ? videos.value : null;
     return { id: courseID, name, assignments, videos: modules?.rows ?? null, modulesUnchanged: modules?.unchanged ?? false,
         modulesPartial: modules?.partial ?? false,
